@@ -6,6 +6,8 @@ work/
 *.db
 vendor-ref/
 node_modules/
+state.json
+trace_logs/
 
 # 测试样本与运行产物（顾客/店内文件属隐私，绝不入库）
 test.pdf

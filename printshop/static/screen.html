@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>屏幕调试页</title>
+<style>
+  body { font-family: "Microsoft YaHei", sans-serif; background: #111; color: #eee;
+         margin: 0; padding: 24px; }
+  h1 { margin: 0 0 12px; font-size: 20px; }
+  #ws-status { font-size: 13px; color: #9cdcfe; margin-bottom: 16px; }
+  dl { display: grid; grid-template-columns: 120px 1fr; gap: 8px 12px;
+       max-width: 640px; font-size: 15px; }
+  dt { color: #8a8a8a; }
+  dd { margin: 0; word-break: break-all; }
+  #qr-box { width: 160px; height: 160px; background: #fff; margin-bottom: 8px; }
+  #qr-text { font-size: 12px; color: #aaa; }
+  button { margin-top: 16px; padding: 8px 20px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <h1>屏幕状态（开发调试）</h1>
+  <div id="ws-status">WS: 未连接</div>
+  <dl>
+    <dt>state</dt><dd id="state">-</dd>
+    <dt>display</dt><dd id="display">-</dd>
+    <dt>file_count</dt><dd id="file_count">-</dd>
+    <dt>message</dt><dd id="message">-</dd>
+    <dt>qr_content</dt>
+    <dd>
+      <div id="qr-box"></div>
+      <div id="qr-text"></div>
+    </dd>
+  </dl>
+  <button onclick="fetchState()">刷新</button>
+
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+  <script>
+    function render(state) {
+      document.getElementById("state").textContent = state.state || "-";
+      document.getElementById("display").textContent = state.display;
+      document.getElementById("file_count").textContent = state.file_count;
+      document.getElementById("message").textContent = state.message || "";
+      document.getElementById("qr-text").textContent = state.qr_content || "(无)";
+      var box = document.getElementById("qr-box");
+      box.innerHTML = "";
+      if (state.qr_content && window.QRCode) {
+        new QRCode(box, { text: state.qr_content, width: 160, height: 160 });
+      } else if (state.qr_content) {
+        // qrcodejs 未加载（离线）时仅显示文本；真实屏幕由 ESP32 负责渲染二维码
+        box.innerHTML = '<div style="color:#333;font-size:12px;padding:8px">' +
+          '二维码由 ESP32 渲染</div>';
+      }
+    }
+
+    async function fetchState() {
+      try {
+        var r = await fetch("/api/screen/state");
+        render(await r.json());
+      } catch (e) { /* 服务未就绪时忽略 */ }
+    }
+
+    function connectWS() {
+      var proto = location.protocol === "https:" ? "wss" : "ws";
+      var ws = new WebSocket(proto + "://" + location.host + "/ws/admin");
+      var el = document.getElementById("ws-status");
+      ws.onopen = function () { el.textContent = "WS: 已连接"; };
+      ws.onmessage = function (ev) {
+        var d = JSON.parse(ev.data);
+        if (d.type === "session") render(d);
+      };
+      ws.onclose = function () {
+        el.textContent = "WS: 已断开（3 秒后重连）";
+        setTimeout(connectWS, 3000);
+      };
+    }
+
+    fetchState();
+    connectWS();
+  </script>
+</body>
+</html>

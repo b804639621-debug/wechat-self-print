@@ -75,6 +75,7 @@ class JobStore:
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
+        self.on_job_added = None
 
     def close(self) -> None:
         self.conn.close()
@@ -89,7 +90,10 @@ class JobStore:
              JobStatus.PENDING, now),
         )
         self.conn.commit()
-        return cur.lastrowid
+        jid = cur.lastrowid
+        if self.on_job_added is not None:
+            self.on_job_added(jid)
+        return jid
 
     def list_active(self) -> list[Job]:
         marks = ",".join("?" * len(JobStatus._ACTIVE))
@@ -111,6 +115,22 @@ class JobStore:
         self.conn.execute(
             "UPDATE print_jobs SET status = ?, error = ?, options_json = ? WHERE id = ?",
             (status, error, options_json, job_id),
+        )
+        self.conn.commit()
+
+    def set_page_count(self, job_id: int, page_count: int) -> None:
+        self.conn.execute(
+            "UPDATE print_jobs SET page_count = ? WHERE id = ?",
+            (page_count, job_id),
+        )
+        self.conn.commit()
+
+    def mark_printed(self, job_id: int) -> None:
+        """R4：打印成功后调用——回填 printed_at 并置为 done。"""
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        self.conn.execute(
+            "UPDATE print_jobs SET status = ?, printed_at = ? WHERE id = ?",
+            (JobStatus.DONE, now, job_id),
         )
         self.conn.commit()
 

@@ -43,6 +43,30 @@ def test_set_status_error(tmp_path: Path):
     assert job.options_json == ""
 
 
+def test_mark_printed(tmp_path: Path):
+    s = JobStore(tmp_path / "t.db")
+    jid = s.add("m1", "a.pdf", "inbox/a.pdf", "pdf", 100, 1)
+    s.mark_printed(jid)
+    job = s.get(jid)
+    assert job.status == JobStatus.DONE
+    assert job.printed_at
+
+
+def test_set_page_count(tmp_path: Path):
+    s = JobStore(tmp_path / "t.db")
+    jid = s.add("m1", "a.pdf", "inbox/a.pdf", "pdf", 100, 0)
+    s.set_page_count(jid, 5)
+    assert s.get(jid).page_count == 5
+
+
+def test_on_job_added_callback(tmp_path: Path):
+    s = JobStore(tmp_path / "t.db")
+    seen = []
+    s.on_job_added = seen.append
+    jid = s.add("m1", "a.pdf", "inbox/a.pdf", "pdf", 100, 1)
+    assert seen == [jid]
+
+
 def test_persists_across_reopen(tmp_path: Path):
     db = tmp_path / "t.db"
     s = JobStore(db)
