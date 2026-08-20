@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>打印管理后台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+         background: #f0f2f5; color: #1f2329; font-size: 14px; }
+
+  #status-bar { display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+                background: #1f2329; color: #fff; }
+  #status-bar .bar-title { font-size: 16px; font-weight: 600; white-space: nowrap; }
+  #session-state { padding: 5px 14px; border-radius: 14px; font-weight: 600;
+                   background: #5b6472; }
+  #session-state.s-connected { background: #2e7d32; }
+  #session-state.s-receiving { background: #f9a825; color: #1f2329; }
+  #session-state.s-printing { background: #1565c0; }
+  #session-state.s-scanned { background: #00838f; }
+  #session-state.s-idle { background: #5b6472; }
+  #session-screen { color: #9ba3af; font-size: 13px; }
+  #session-count { color: #9ba3af; font-size: 13px; }
+  #bar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  #sound-toggle { background: #37404d; color: #fff; border: none; border-radius: 6px;
+                  padding: 8px 16px; font-size: 15px; cursor: pointer; }
+  #sound-toggle.off { opacity: .55; }
+  #finish-btn { background: #c62828; color: #fff; border: none; border-radius: 6px;
+                padding: 8px 18px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  #finish-btn:hover { background: #b71c1c; }
+
+  #note-bar { display: none; align-items: center; gap: 12px; background: #fff8e1;
+              border-bottom: 1px solid #f0c36d; padding: 10px 16px; }
+  #note-bar.show { display: flex; }
+  #note-label { color: #b26a00; font-weight: 600; white-space: nowrap; }
+  #note-text { flex: 1; word-break: break-all; color: #5d3a00; }
+  #note-clear { background: #fff3cd; border: 1px solid #f0c36d; color: #8a5300;
+                border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+
+  #main { display: flex; gap: 12px; padding: 12px; height: calc(100vh - 120px);
+          min-height: 480px; }
+  .panel { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+           display: flex; flex-direction: column; overflow: hidden; }
+
+  #list-panel { width: 320px; flex-shrink: 0; }
+  #list-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+               border-bottom: 1px solid #eee; }
+  #list-head label { display: flex; align-items: center; gap: 6px; cursor: pointer;
+                     user-select: none; }
+  #list-head input { width: 17px; height: 17px; cursor: pointer; }
+  #batch-btn { margin-left: auto; background: #1976d2; color: #fff; border: none;
+               border-radius: 6px; padding: 7px 14px; font-size: 14px; font-weight: 600;
+               cursor: pointer; }
+  #batch-btn:hover { background: #1565c0; }
+  #batch-btn:disabled { background: #b0bec5; cursor: not-allowed; }
+  #job-list { flex: 1; overflow-y: auto; }
+  .job-card { display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+              padding: 10px 12px; border-bottom: 1px solid #f2f2f2; cursor: pointer; }
+  .job-card:hover { background: #f7f9fc; }
+  .job-card.selected { background: #e3f2fd; box-shadow: inset 3px 0 0 #1976d2; }
+  .job-card.other { background: #ffebee; }
+  .job-card.other.selected { background: #ffcdd2; box-shadow: inset 3px 0 0 #c62828; }
+  .job-card input[type=checkbox] { width: 17px; height: 17px; cursor: pointer;
+                                   flex-shrink: 0; }
+  .job-info { flex: 1; min-width: 0; }
+  .job-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden;
+              text-overflow: ellipsis; }
+  .job-meta { font-size: 12px; color: #8a929e; margin-top: 3px; }
+  .badge { flex-shrink: 0; font-size: 12px; padding: 3px 10px; border-radius: 10px;
+           font-weight: 600; white-space: nowrap; }
+  .b-pending { background: #eceff1; color: #546e7a; }
+  .b-printing { background: #bbdefb; color: #0d47a1; animation: pulse 1s infinite; }
+  .b-done { background: #c8e6c9; color: #1b5e20; }
+  .b-failed { background: #ffcdd2; color: #b71c1c; }
+  .b-discarded { background: #e0e0e0; color: #616161; }
+  .job-error { flex-basis: 100%; font-size: 12px; color: #c62828; margin-top: 4px;
+               word-break: break-all; }
+  @keyframes pulse { 50% { opacity: .55; } }
+  #list-empty { padding: 30px; text-align: center; color: #9aa3ad; }
+
+  #preview-panel { flex: 1; min-width: 0; }
+  #preview-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+                  border-bottom: 1px solid #eee; }
+  #preview-title { font-weight: 600; white-space: nowrap; overflow: hidden;
+                   text-overflow: ellipsis; }
+  #page-indicator { margin-left: auto; color: #5f6770; font-size: 13px; white-space: nowrap; }
+  #preview-stage { flex: 1; display: flex; align-items: center; justify-content: center;
+                   background: #e8eaed; min-height: 0; position: relative; }
+  #preview-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  #preview-placeholder { color: #8a929e; text-align: center; padding: 20px; }
+  #preview-nav { display: flex; align-items: center; justify-content: center; gap: 14px;
+                 padding: 10px; border-top: 1px solid #eee; }
+  #preview-nav button { background: #f5f6f8; border: 1px solid #d9dde3; color: #1f2329;
+                        border-radius: 6px; padding: 8px 22px; font-size: 15px;
+                        cursor: pointer; }
+  #preview-nav button:hover:not(:disabled) { background: #eceff1; }
+  #preview-nav button:disabled { opacity: .4; cursor: not-allowed; }
+
+  #settings-panel { width: 340px; flex-shrink: 0; overflow-y: auto; padding: 14px 16px; }
+  #settings-panel h3 { margin: 0 0 12px; font-size: 15px; color: #37404d; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 13px; color: #5f6770; margin-bottom: 5px; }
+  .field select, .field input[type=text], .field input[type=number] {
+    width: 100%; padding: 8px 10px; border: 1px solid #d9dde3; border-radius: 6px;
+    font-size: 14px; background: #fff; }
+  .radio-row { display: flex; gap: 6px; }
+  .radio-row label { display: flex; align-items: center; gap: 5px; margin: 0;
+                     padding: 7px 12px; border: 1px solid #d9dde3; border-radius: 6px;
+                     cursor: pointer; font-size: 14px; }
+  .radio-row label.on { background: #e3f2fd; border-color: #1976d2; }
+  .radio-row input { margin: 0; }
+  .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+  .btn-group .wide { grid-column: 1 / -1; }
+  .btn { border: none; border-radius: 6px; padding: 11px 10px; font-size: 15px;
+         font-weight: 600; cursor: pointer; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  #print-btn { background: #2e7d32; color: #fff; grid-column: 1 / -1; font-size: 16px;
+               padding: 13px; }
+  #print-btn:hover:not(:disabled) { background: #1b5e20; }
+  #retry-btn { background: #f9a825; color: #1f2329; }
+  #open-btn { background: #eceff1; color: #1f2329; }
+  #opendir-btn { background: #eceff1; color: #1f2329; }
+  #discard-btn { background: #c62828; color: #fff; }
+  #discard-btn:hover:not(:disabled) { background: #b71c1c; }
+  #sel-file { margin-top: 14px; padding: 10px 12px; background: #f5f6f8; border-radius: 6px;
+              font-size: 13px; color: #5f6770; word-break: break-all; }
+
+  #toasts { position: fixed; top: 16px; right: 16px; z-index: 999; display: flex;
+            flex-direction: column; gap: 8px; }
+  .toast { background: #323639; color: #fff; padding: 10px 18px; border-radius: 6px;
+           box-shadow: 0 2px 8px rgba(0,0,0,.2); opacity: 0; transform: translateX(20px);
+           transition: all .25s; max-width: 360px; word-break: break-all; }
+  .toast.show { opacity: 1; transform: none; }
+  .toast.error { background: #c62828; }
+  .toast.success { background: #2e7d32; }
+</style>
+</head>
+<body>
+  <div id="status-bar">
+    <div class="bar-title">打印管理</div>
+    <div id="session-state" class="s-idle">未连接</div>
+    <span id="session-screen"></span>
+    <span id="session-count"></span>
+    <div id="bar-right">
+      <button id="sound-toggle" title="新文件提示音">🔔 声音:开</button>
+      <button id="finish-btn">完成服务</button>
+    </div>
+  </div>
+
+  <div id="note-bar">
+    <span id="note-label">📝 顾客备注：</span>
+    <span id="note-text"></span>
+    <button id="note-clear">清除</button>
+  </div>
+
+  <div id="main">
+    <div id="list-panel" class="panel">
+      <div id="list-head">
+        <label><input type="checkbox" id="check-all"><span>全选</span></label>
+        <button id="batch-btn" disabled>批量打印 (0)</button>
+      </div>
+      <div id="job-list"></div>
+    </div>
+
+    <div id="preview-panel" class="panel">
+      <div id="preview-head">
+        <span id="preview-title">未选择文件</span>
+        <span id="page-indicator"></span>
+      </div>
+      <div id="preview-stage">
+        <img id="preview-img" alt="" style="display:none">
+        <div id="preview-placeholder">请选择左侧文件查看预览</div>
+      </div>
+      <div id="preview-nav">
+        <button id="prev-page">◀ 上一页</button>
+        <button id="next-page">下一页 ▶</button>
+      </div>
+    </div>
+
+    <div id="settings-panel" class="panel">
+      <h3>打印设置</h3>
+      <div class="field">
+        <label>打印机</label>
+        <select id="printer"></select>
+      </div>
+      <div class="field">
+        <label>颜色</label>
+        <div class="radio-row" id="color-row">
+          <label class="on"><input type="radio" name="color" value="color">彩色</label>
+          <label><input type="radio" name="color" value="gray">灰度</label>
+        </div>
+      </div>
+      <div class="field">
+        <label>份数</label>
+        <input type="number" id="copies" min="1" value="1">
+      </div>
+      <div class="field">
+        <label>页码（留空为全部，如 1-3,5）</label>
+        <input type="text" id="pages" placeholder="全部">
+      </div>
+      <div class="field">
+        <label>双面</label>
+        <select id="duplex">
+          <option value="simplex">单面</option>
+          <option value="duplexlong">双面（长边装订）</option>
+          <option value="duplexshort">双面（短边装订）</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>纸张</label>
+        <select id="paper">
+          <option>A4</option>
+          <option>A3</option>
+          <option>A5</option>
+          <option>B5</option>
+          <option>Letter</option>
+          <option>Legal</option>
+        </select>
+      </div>
+      <div class="btn-group">
+        <button id="print-btn" class="btn">🖨 开始打印</button>
+        <button id="retry-btn" class="btn" style="display:none">↻ 重打</button>
+        <button id="open-btn" class="btn">打开文件编辑</button>
+        <button id="opendir-btn" class="btn">打开所在目录</button>
+        <button id="discard-btn" class="btn">🗑 作废</button>
+      </div>
+      <div id="sel-file">未选择文件</div>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var LS_KEY = "admin_print_settings";
+  var LS_SOUND = "admin_sound_on";
+
+  var S = {
+    jobs: [],
+    jobsById: {},
+    selId: null,
+    curPage: 0,
+    maxPage: null,
+    sound: localStorage.getItem(LS_SOUND) !== "0",
+    checked: {},
+    ws: null,
+    loadingPreview: false,
+    saving: false,
+    savedPrinter: ""
+  };
+  var needReload = false;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function toast(msg, type) {
+    var t = document.createElement("div");
+    t.className = "toast " + (type || "");
+    t.textContent = msg;
+    $("toasts").appendChild(t);
+    setTimeout(function () { t.classList.add("show"); }, 10);
+    setTimeout(function () {
+      t.classList.remove("show");
+      setTimeout(function () { t.remove(); }, 300);
+    }, 3200);
+  }
+
+  function api(path, opts) {
+    return fetch(path, opts).then(function (r) {
+      var ct = r.headers.get("content-type") || "";
+      return r.text().then(function (text) {
+        var data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+        if (!r.ok) {
+          var err = new Error((data && data.error) || ("HTTP " + r.status));
+          err.status = r.status;
+          err.data = data;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function beep() {
+    if (!S.sound) return;
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      var ctx = new Ctx();
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.35, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+      osc.onended = function () { ctx.close(); };
+    } catch (e) {}
+  }
+
+  var STATUS_TEXT = {
+    pending: "待打印",
+    printing: "打印中",
+    done: "已完成",
+    failed: "失败",
+    discarded: "已作废"
+  };
+
+  function fmtSize(b) {
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
+    if (b >= 1024) return Math.round(b / 1024) + " KB";
+    return b + " B";
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return "";
+    var s = iso.replace("T", " ").slice(0, 16);
+    return s;
+  }
+
+  function loadSettings() {
+    try {
+      var d = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      if (d.printer) S.savedPrinter = d.printer;
+      if (d.color) {
+        var c = document.querySelector('input[name="color"][value="' + d.color + '"]');
+        if (c) c.checked = true;
+      }
+      if (d.copies) $("copies").value = d.copies;
+      if (d.pages !== undefined && d.pages !== null) $("pages").value = d.pages;
+      if (d.duplex) $("duplex").value = d.duplex;
+      if (d.paper) $("paper").value = d.paper;
+    } catch (e) {}
+    syncRadioStyle();
+  }
+
+  function saveSettings() {
+    var d = {
+      printer: $("printer").value,
+      color: document.querySelector('input[name="color"]:checked').value,
+      copies: $("copies").value,
+      pages: $("pages").value,
+      duplex: $("duplex").value,
+      paper: $("paper").value
+    };
+    try { localStorage.setItem(LS_KEY, JSON.stringify(d)); } catch (e) {}
+  }
+
+  function syncRadioStyle() {
+    var labels = document.querySelectorAll("#color-row label");
+    for (var i = 0; i < labels.length; i++) {
+      labels[i].className = labels[i].querySelector("input").checked ? "on" : "";
+    }
+  }
+
+  function readOptions() {
+    return {
+      printer: $("printer").value,
+      color: document.querySelector('input[name="color"]:checked').value === "color",
+      copies: parseInt($("copies").value, 10) || 1,
+      pages: ($("pages").value || "").trim(),
+      duplex: $("duplex").value,
+      paper: $("paper").value
+    };
+  }
+
+  function sessionText(st) {
+    return {
+      IDLE: "空闲",
+      SCANNED: "已扫码",
+      CONNECTED: "已连接",
+      RECEIVING: "接收中",
+      PRINTING: "打印中"
+    }[st] || st || "未连接";
+  }
+
+  function renderSession(data) {
+    var el = $("session-state");
+    var st = data.state || "IDLE";
+    el.textContent = sessionText(st);
+    el.className = "s-" + st.toLowerCase();
+    $("session-screen").textContent = (data.display === "on") ? "屏幕:开" : "屏幕:关";
+    $("session-count").textContent = "已接收 " + (data.file_count || 0) + " 个文件";
+  }
+
+  function showNote(text) {
+    if (!text) { $("note-bar").classList.remove("show"); return; }
+    $("note-text").textContent = text;
+    $("note-bar").classList.add("show");
+  }
+
+  function renderJobs() {
+    var list = $("job-list");
+    if (!S.jobs.length) {
+      list.innerHTML = '<div id="list-empty">暂无待处理文件<br>顾客发送文件后会自动出现在这里</div>';
+    } else {
+      list.innerHTML = "";
+      S.jobs.forEach(function (j) {
+        var card = document.createElement("div");
+        card.className = "job-card";
+        if (j.category === "other") card.classList.add("other");
+        if (j.id === S.selId) card.classList.add("selected");
+        card.dataset.id = j.id;
+
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!S.checked[j.id];
+        cb.addEventListener("click", function (e) { e.stopPropagation(); });
+        cb.addEventListener("change", function () {
+          if (cb.checked) S.checked[j.id] = true;
+          else delete S.checked[j.id];
+          updateCheckAll();
+          updateBatchBtn();
+        });
+
+        var info = document.createElement("div");
+        info.className = "job-info";
+        var name = document.createElement("div");
+        name.className = "job-name";
+        name.textContent = j.file_name;
+        var meta = document.createElement("div");
+        meta.className = "job-meta";
+        meta.textContent = fmtSize(j.size_bytes) + " · " +
+          (j.page_count ? j.page_count + " 页" : "页数未知") + " · " + fmtTime(j.created_at);
+        info.appendChild(name);
+        info.appendChild(meta);
+
+        var badge = document.createElement("span");
+        badge.className = "badge b-" + j.status;
+        badge.textContent = STATUS_TEXT[j.status] || j.status;
+
+        card.appendChild(cb);
+        card.appendChild(info);
+        card.appendChild(badge);
+
+        if (j.status === "failed" && j.error) {
+          var err = document.createElement("div");
+          err.className = "job-error";
+          err.textContent = "✕ " + j.error;
+          card.appendChild(err);
+        }
+
+        card.addEventListener("click", function () { selectJob(j.id); });
+        list.appendChild(card);
+      });
+    }
+    updateBatchBtn();
+    updateCheckAll();
+  }
+
+  function updateCheckAll() {
+    var all = S.jobs.length > 0 &&
+      S.jobs.every(function (j) { return !!S.checked[j.id]; });
+    var ca = $("check-all");
+    ca.checked = all;
+    ca.indeterminate = !all && Object.keys(S.checked).length > 0;
+  }
+
+  function updateBatchBtn() {
+    var n = Object.keys(S.checked).length;
+    var b = $("batch-btn");
+    b.disabled = n === 0;
+    b.textContent = "批量打印 (" + n + ")";
+  }
+
+  function refreshJobs(keepSelection) {
+    return api("/api/jobs").then(function (jobs) {
+      S.jobs = jobs || [];
+      S.jobsById = {};
+      jobs.forEach(function (j) { S.jobsById[j.id] = j; });
+      if (S.selId && !S.jobsById[S.selId]) {
+        S.selId = null;
+        S.curPage = 0;
+        S.maxPage = null;
+        clearPreview();
+      } else if (S.selId) {
+        S.maxPage = S.jobsById[S.selId].page_count || null;
+      }
+      renderJobs();
+      if (S.selId) loadPreview();
+      return jobs;
+    }).catch(function (err) {
+      toast("加载文件列表失败：" + err.message, "error");
+    });
+  }
+
+  function clearPreview() {
+    $("preview-img").style.display = "none";
+    $("preview-placeholder").textContent = "请选择左侧文件查看预览";
+    $("preview-placeholder").style.display = "block";
+    $("preview-title").textContent = "未选择文件";
+    $("page-indicator").textContent = "";
+    updateSelFile();
+    updateSettingsButtons();
+  }
+
+  function selectJob(id) {
+    var job = S.jobsById[id];
+    if (!job) return;
+    S.selId = id;
+    S.curPage = 0;
+    S.maxPage = job.page_count || null;
+    renderJobs();
+    if (job.category === "other") {
+      $("preview-img").style.display = "none";
+      $("preview-placeholder").style.display = "block";
+      $("preview-placeholder").textContent = "该文件格式不支持预览（标红文件）";
+      $("preview-title").textContent = job.file_name;
+      $("page-indicator").textContent = "";
+      updateSelFile();
+      updateSettingsButtons();
+    } else {
+      loadPreview();
+    }
+  }
+
+  function loadPreview() {
+    var id = S.selId;
+    if (!id || S.loadingPreview) return;
+    var job = S.jobsById[id];
+    if (!job || job.category === "other") return;
+    S.loadingPreview = true;
+    $("preview-placeholder").style.display = "block";
+    $("preview-placeholder").textContent = "加载中…";
+    $("preview-img").style.display = "none";
+    $("preview-title").textContent = job.file_name;
+    fetch("/api/jobs/" + id + "/preview?page=" + S.curPage).then(function (r) {
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (d) {
+          var msg = (d && d.error) || ("预览失败 HTTP " + r.status);
+          if (r.status === 400 && /页码|渲染/.test(msg)) {
+            clampMaxPage();
+            $("preview-placeholder").textContent = msg;
+            toast(msg, "error");
+            needReload = true;
+          } else {
+            $("preview-placeholder").style.display = "block";
+            $("preview-placeholder").textContent = msg;
+            toast(msg, "error");
+          }
+        });
+      }
+      return r.blob().then(function (blob) {
+        var img = $("preview-img");
+        img.onload = function () {
+          $("preview-placeholder").style.display = "none";
+          img.style.display = "block";
+        };
+        img.src = URL.createObjectURL(blob);
+      });
+    }).catch(function () {
+      $("preview-placeholder").style.display = "block";
+      $("preview-placeholder").textContent = "预览请求失败";
+      toast("预览请求失败", "error");
+    }).then(function () {
+      S.loadingPreview = false;
+      updatePageIndicator();
+      if (needReload) { needReload = false; return loadPreview(); }
+      if (job && !job.page_count && S.selId === id) {
+        return refreshJobs(true);
+      }
+    });
+  }
+
+  function clampMaxPage() {
+    if (S.maxPage === null || S.curPage >= S.maxPage) {
+      S.maxPage = Math.max(1, S.curPage);
+      if (S.curPage >= S.maxPage) S.curPage = Math.max(0, S.maxPage - 1);
+    }
+  }
+
+  function updatePageIndicator() {
+    var job = S.selId ? S.jobsById[S.selId] : null;
+    if (!job || job.category === "other") return;
+    var total = S.maxPage ? S.maxPage : "?";
+    $("page-indicator").textContent = "第 " + (S.curPage + 1) + " / " + total + " 页";
+    $("prev-page").disabled = S.curPage <= 0;
+  }
+
+  function updateSelFile() {
+    var job = S.selId ? S.jobsById[S.selId] : null;
+    var el = $("sel-file");
+    if (!job) { el.textContent = "未选择文件"; return; }
+    el.textContent = "当前文件：" + job.file_name + (job.category === "other" ?
+      "（不支持打印）" : "");
+  }
+
+  function updateSettingsButtons() {
+    var job = S.selId ? S.jobsById[S.selId] : null;
+    var isOther = job && job.category === "other";
+    var isFailed = job && job.status === "failed";
+    var isFinished = job && (job.status === "done" || job.status === "discarded");
+    $("print-btn").disabled = !job || isOther || isFinished || !$("printer").value;
+    $("retry-btn").style.display = isFailed ? "" : "none";
+    $("open-btn").style.display = isOther ? "none" : "";
+    $("discard-btn").disabled = !job || isFinished;
+    if (isOther) $("opendir-btn").style.display = "";
+  }
+
+  function getSelectedIds() {
+    return Object.keys(S.checked).map(Number);
+  }
+
+  function afterAction(ids) {
+    ids = ids.filter(function (id) {
+      var j = S.jobsById[id];
+      return j && j.status !== "done" && j.status !== "discarded";
+    });
+    if (!ids.length) { toast("所选文件已全部处理完毕", "error"); return; }
+    ids.forEach(function (id) {
+      var job = S.jobsById[id];
+      if (job) job.status = "printing";
+    });
+    renderJobs();
+    var opts = readOptions();
+    api("/api/jobs/print_batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids: ids, options: opts })
+    }).then(function (res) {
+      var results = res.results || [];
+      var okCount = 0;
+      var failCount = 0;
+      results.forEach(function (r) {
+        var job = S.jobsById[r.id];
+        if (job) {
+          if (r.ok) { job.status = "done"; okCount++; }
+          else { job.status = "failed"; job.error = r.error || "打印失败"; failCount++; }
+        }
+      });
+      renderJobs();
+      if (failCount === 0) toast("打印完成：" + okCount + " 个文件", "success");
+      else toast("完成 " + okCount + " 个，失败 " + failCount + " 个", "error");
+    }).catch(function (err) {
+      toast("打印请求失败：" + err.message, "error");
+    });
+  }
+
+  function connectWS() {
+    var proto = location.protocol === "https:" ? "wss" : "ws";
+    var ws = new WebSocket(proto + "://" + location.host + "/ws/admin");
+    S.ws = ws;
+    ws.onopen = function () {
+      refreshJobs(true);
+    };
+    ws.onmessage = function (ev) {
+      var d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (!d || !d.type) return;
+      if (d.type === "session") {
+        renderSession(d);
+        if (d.message) showNote(d.message);
+      } else if (d.type === "new_job") {
+        beep();
+        toast("📥 新文件已到达！", "success");
+        refreshJobs(true);
+      } else if (d.type === "job_update") {
+        var job = S.jobsById[d.id];
+        if (job) {
+          job.status = d.status;
+          if (d.status === "failed" && d.error) job.error = d.error;
+          renderJobs();
+          updateSettingsButtons();
+        }
+      } else if (d.type === "note") {
+        showNote(d.text || "");
+      }
+    };
+    ws.onclose = function () {
+      setTimeout(connectWS, 3000);
+    };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+
+  function initPrinters() {
+    var saved = S.savedPrinter;
+    api("/api/printers").then(function (d) {
+      var list = (d && d.printers) || [];
+      var sel = $("printer");
+      sel.innerHTML = "";
+      if (!list.length) {
+        var opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "未检测到打印机";
+        sel.appendChild(opt);
+      } else {
+        list.forEach(function (p) {
+          var o = document.createElement("option");
+          o.value = p;
+          o.textContent = p;
+          sel.appendChild(o);
+        });
+        if (list.indexOf(saved) !== -1) sel.value = saved;
+        else sel.value = list[0];
+      }
+      updateSettingsButtons();
+    }).catch(function () {
+      toast("获取打印机列表失败", "error");
+    });
+  }
+
+  function init() {
+    loadSettings();
+    $("printer").addEventListener("change", function () { saveSettings(); updateSettingsButtons(); });
+    document.querySelectorAll('#color-row input[name="color"]').forEach(function (r) {
+      r.addEventListener("change", function () { syncRadioStyle(); saveSettings(); });
+    });
+    ["copies", "pages", "duplex", "paper"].forEach(function (id) {
+      $(id).addEventListener("change", saveSettings);
+      $(id).addEventListener("input", saveSettings);
+    });
+
+    $("sound-toggle").addEventListener("click", function () {
+      S.sound = !S.sound;
+      localStorage.setItem(LS_SOUND, S.sound ? "1" : "0");
+      $("sound-toggle").textContent = "🔔 声音:" + (S.sound ? "开" : "关");
+      $("sound-toggle").classList.toggle("off", !S.sound);
+    });
+    $("sound-toggle").textContent = "🔔 声音:" + (S.sound ? "开" : "关");
+    $("sound-toggle").classList.toggle("off", !S.sound);
+
+    $("check-all").addEventListener("change", function () {
+      var on = $("check-all").checked;
+      S.jobs.forEach(function (j) {
+        if (on) S.checked[j.id] = true;
+        else delete S.checked[j.id];
+      });
+      renderJobs();
+    });
+
+    $("batch-btn").addEventListener("click", function () {
+      var ids = getSelectedIds();
+      if (!ids.length) { toast("请先勾选文件", "error"); return; }
+      afterAction(ids);
+    });
+
+    $("print-btn").addEventListener("click", function () {
+      var job = S.selId ? S.jobsById[S.selId] : null;
+      if (!job) { toast("请先选择文件", "error"); return; }
+      if (job.category === "other") { toast("该文件格式不支持打印", "error"); return; }
+      if (!$("printer").value) { toast("未选择打印机", "error"); return; }
+      afterAction([job.id]);
+    });
+
+    $("retry-btn").addEventListener("click", function () {
+      var job = S.selId ? S.jobsById[S.selId] : null;
+      if (!job) return;
+      api("/api/jobs/" + job.id + "/retry", { method: "POST" }).then(function () {
+        toast("已重置为待打印，请重试", "success");
+        return refreshJobs(true);
+      }).catch(function (err) {
+        toast("重试失败：" + err.message, "error");
+      });
+    });
+
+    $("open-btn").addEventListener("click", function () {
+      var job = S.selId ? S.jobsById[S.selId] : null;
+      if (!job || job.category === "other") return;
+      api("/api/jobs/" + job.id + "/open", { method: "POST" })
+        .then(function () { toast("已用默认程序打开", "success"); })
+        .catch(function (err) { toast("打开失败：" + err.message, "error"); });
+    });
+
+    $("opendir-btn").addEventListener("click", function () {
+      var job = S.selId ? S.jobsById[S.selId] : null;
+      if (!job) return;
+      api("/api/jobs/" + job.id + "/open_dir", { method: "POST" })
+        .then(function () { toast("已在资源管理器中定位", "success"); })
+        .catch(function (err) { toast("打开失败：" + err.message, "error"); });
+    });
+
+    $("discard-btn").addEventListener("click", function () {
+      var job = S.selId ? S.jobsById[S.selId] : null;
+      if (!job) return;
+      if (!confirm("确定作废文件「" + job.file_name + "」吗？")) return;
+      api("/api/jobs/" + job.id + "/discard", { method: "POST" }).then(function () {
+        toast("已作废：" + job.file_name);
+        delete S.checked[job.id];
+        return refreshJobs(true);
+      }).catch(function (err) {
+        toast("作废失败：" + err.message, "error");
+      });
+    });
+
+    $("finish-btn").addEventListener("click", function () {
+      if (!confirm("确定完成服务？将登出顾客微信、清空收件箱并归档所有任务。")) return;
+      api("/api/service/finish", { method: "POST" }).then(function () {
+        toast("服务已完成，收件箱已清空", "success");
+        S.jobs = [];
+        S.jobsById = {};
+        S.selId = null;
+        S.checked = {};
+        renderJobs();
+        clearPreview();
+      }).catch(function (err) {
+        toast("完成服务失败：" + err.message, "error");
+      });
+    });
+
+    $("note-clear").addEventListener("click", function () {
+      $("note-bar").classList.remove("show");
+    });
+
+    $("prev-page").addEventListener("click", function () {
+      if (S.curPage <= 0) return;
+      S.curPage--;
+      loadPreview();
+    });
+
+    $("next-page").addEventListener("click", function () {
+      if (S.maxPage !== null && S.curPage + 1 >= S.maxPage) return;
+      S.curPage++;
+      loadPreview();
+    });
+
+    api("/api/screen/state").then(function (d) {
+      renderSession(d);
+      if (d.message) showNote(d.message);
+    }).catch(function () {});
+
+    initPrinters();
+    refreshJobs(true).then(function () { updateSettingsButtons(); });
+    connectWS();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>

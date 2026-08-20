@@ -62,7 +62,7 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
 
     @app.get("/admin")
     async def admin_page():
-        return FileResponse(str(STATIC_DIR / "screen.html"))
+        return FileResponse(str(STATIC_DIR / "admin.html"))
 
     return app
 
