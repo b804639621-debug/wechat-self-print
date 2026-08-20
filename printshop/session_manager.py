@@ -30,6 +30,7 @@ class SessionManager:
         self.qr_png: bytes | None = None
         self.qr_content: str | None = None
         self.on_change: Callable[[], None] | None = None
+        self.on_note: Callable[[], None] | None = None
 
         self._note = ""
         self._last_event_ts = time.monotonic()
@@ -162,6 +163,9 @@ class SessionManager:
                 elif mtype == "text":
                     self._note = m.get("text", "")
                     self._seen_msg_ids.add(mid)
+                    self._notify()
+                    if self.on_note:
+                        self.on_note()
         finally:
             if files:
                 self._transition(SessionState.CONNECTED)

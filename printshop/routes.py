@@ -101,6 +101,22 @@ def _job_dict(job) -> dict:
     }
 
 
+def _validate_job_path(cfg, file_path: str) -> Path:
+    """校验文件存在且 resolve 后位于 inbox/work 之内，防止未认证端触发任意路径执行。"""
+    p = Path(file_path)
+    try:
+        resolved = p.expanduser().resolve(strict=False)
+    except Exception:
+        resolved = p.absolute()
+    if not resolved.is_file():
+        raise FileNotFoundError("文件不存在")
+    inbox = cfg.inbox_dir.resolve()
+    work = cfg.work_dir.resolve()
+    if not (resolved.is_relative_to(inbox) or resolved.is_relative_to(work)):
+        raise PermissionError("路径越界，禁止操作")
+    return resolved
+
+
 def build_router(ctx: AppContext) -> APIRouter:
     router = APIRouter()
     cfg = ctx.cfg
@@ -242,7 +258,13 @@ def build_router(ctx: AppContext) -> APIRouter:
         if job is None:
             return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
         try:
-            os.startfile(job.file_path)
+            target = _validate_job_path(cfg, job.file_path)
+        except FileNotFoundError as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+        except PermissionError as exc:
+            return JSONResponse(status_code=403, content={"ok": False, "error": str(exc)})
+        try:
+            os.startfile(str(target))
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True}
@@ -253,7 +275,13 @@ def build_router(ctx: AppContext) -> APIRouter:
         if job is None:
             return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
         try:
-            subprocess.Popen(["explorer", f"/select,{job.file_path}"])
+            target = _validate_job_path(cfg, job.file_path)
+        except FileNotFoundError as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+        except PermissionError as exc:
+            return JSONResponse(status_code=403, content={"ok": False, "error": str(exc)})
+        try:
+            subprocess.Popen(["explorer", f"/select,{target}"])
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True}

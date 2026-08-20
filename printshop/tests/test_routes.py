@@ -291,20 +291,56 @@ def test_retry_job(tmp_path):
 
 def test_open_job(tmp_path):
     app, ctx = _app(tmp_path)
-    ctx.store.get.return_value = _file_job(tmp_path, path=str(tmp_path / "a1.pdf"))
+    _write_src(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path)
     with patch("os.startfile") as sf:
         r = TestClient(app).post("/api/jobs/1/open")
     assert r.json() == {"ok": True}
-    sf.assert_called_once_with(str(tmp_path / "a1.pdf"))
+    sf.assert_called_once_with(str(tmp_path / "inbox" / "a1.pdf"))
 
 
 def test_open_dir(tmp_path):
     app, ctx = _app(tmp_path)
-    ctx.store.get.return_value = _file_job(tmp_path, path=str(tmp_path / "a1.pdf"))
+    _write_src(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path)
     with patch("subprocess.Popen") as popen:
         r = TestClient(app).post("/api/jobs/1/open_dir")
     assert r.json() == {"ok": True}
     popen.assert_called_once()
+
+
+def test_open_outside_inbox_rejected(tmp_path):
+    app, ctx = _app(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x")
+    ctx.store.get.return_value = _file_job(tmp_path, path=str(outside))
+    with patch("os.startfile") as sf:
+        r = TestClient(app).post("/api/jobs/1/open")
+    assert r.status_code == 403
+    assert "越界" in r.json()["error"]
+    sf.assert_not_called()
+
+
+def test_open_missing_file_rejected(tmp_path):
+    app, ctx = _app(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path, path=str(tmp_path / "inbox" / "gone.pdf"))
+    with patch("os.startfile") as sf:
+        r = TestClient(app).post("/api/jobs/1/open")
+    assert r.status_code == 400
+    assert "不存在" in r.json()["error"]
+    sf.assert_not_called()
+
+
+def test_open_dir_outside_inbox_rejected(tmp_path):
+    app, ctx = _app(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x")
+    ctx.store.get.return_value = _file_job(tmp_path, path=str(outside))
+    with patch("subprocess.Popen") as popen:
+        r = TestClient(app).post("/api/jobs/1/open_dir")
+    assert r.status_code == 403
+    assert "越界" in r.json()["error"]
+    popen.assert_not_called()
 
 
 def test_service_finish(tmp_path):
@@ -370,6 +406,17 @@ def test_ws_admin_new_job_via_store_hook(tmp_path):
             ctx.store.on_job_added(7)
             msg = ws.receive_json()
     assert msg == {"type": "new_job", "id": 7}
+
+
+def test_ws_note_event_on_note_change(tmp_path):
+    app, ctx = _app(tmp_path)
+    ctx.sm._note = "打印3份"
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws/admin") as ws:
+            ws.receive_json()  # 初始 session
+            ctx.sm.on_note()
+            msg = ws.receive_json()
+    assert msg == {"type": "note", "text": "打印3份"}
 
 
 def test_print_broadcasts_job_update(tmp_path):

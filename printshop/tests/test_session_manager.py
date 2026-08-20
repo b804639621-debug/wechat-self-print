@@ -212,6 +212,18 @@ async def test_receive_text_message_sets_note():
 
 
 @pytest.mark.asyncio
+async def test_text_note_fires_on_note_callback():
+    sm = SessionManager(Config(), MagicMock(), MagicMock())
+    sm.state = SessionState.CONNECTED
+    seen = []
+    sm.on_note = lambda: seen.append(sm._note)
+    sm._wx.fetch_messages = AsyncMock(return_value=[
+        {"id": "t1", "type": "text", "text": "彩色", "is_mine": False}])
+    await sm._process_messages()
+    assert seen == ["彩色"]
+
+
+@pytest.mark.asyncio
 async def test_ignore_own_messages():
     sm = SessionManager(Config(), MagicMock(), MagicMock())
     sm.state = SessionState.CONNECTED

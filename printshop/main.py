@@ -48,6 +48,7 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
     sm = SessionManager(cfg, wx, store)
     ctx = AppContext(cfg=cfg, store=store, wx=wx, sm=sm)
     sm.on_change = lambda: ctx.emit("session", **sm.screen_state())
+    sm.on_note = lambda: ctx.emit("note", text=sm.screen_state()["message"])
     store.on_job_added = lambda jid: ctx.emit("new_job", id=jid)
 
     app = FastAPI(title="WeChat Self-Print", lifespan=lambda app: _lifespan(ctx))
