@@ -70,10 +70,28 @@ class WeChatClient:
                 resp.raise_for_status()
             except Exception:
                 pass
+        self._delete_persisted_session(bot)
         bot.skey = bot.sid = bot.uin = bot.pass_ticket = ""
         bot.user_name = ""
         bot.uuid = ""
         bot.is_logged_in = False
+
+    @staticmethod
+    def _delete_persisted_session(bot) -> None:
+        """删除 vendor 持久化的 state.json，防止登出后 restore_session() 恢复旧凭证。
+
+        路径与 vendor _load_session()/save_session() 一致（bot.state_path）。
+        删除失败（文件不存在、路径非法等）不应抛出，登出本身不因此中断。
+        """
+        state_path = getattr(bot, "state_path", None)
+        if state_path is None:
+            return
+        try:
+            path = Path(state_path)
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
 
     def is_authed(self) -> bool:
         return bool(self._bot._has_auth())

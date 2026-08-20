@@ -1,3 +1,4 @@
+import json
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -90,11 +91,12 @@ async def test_download_raises_when_vendor_fails():
 
 
 @pytest.mark.asyncio
-async def test_logout_posts_webwxlogout_and_clears_credentials():
+async def test_logout_posts_webwxlogout_and_clears_credentials(tmp_path):
     c = _client()
     c._bot.client = AsyncMock()
     c._bot.client.post = AsyncMock(return_value=MagicMock())
     c._bot.entry_host = "szfilehelper.weixin.qq.com"
+    c._bot.state_path = tmp_path / "state.json"
     c._bot.skey = "SK"; c._bot.sid = "SI"; c._bot.uin = "U"
     c._bot.pass_ticket = "PT"; c._bot.user_name = "u"; c._bot.uuid = "u1"
     c._bot.is_logged_in = True
@@ -107,6 +109,61 @@ async def test_logout_posts_webwxlogout_and_clears_credentials():
     assert params["skey"] == "SK" and params["sid"] == "SI"
     assert c._bot.skey == "" and c._bot.sid == "" and c._bot.pass_ticket == ""
     assert c._bot.uuid == "" and c._bot.is_logged_in is False
+
+
+@pytest.mark.asyncio
+async def test_logout_deletes_persisted_state_file(tmp_path):
+    c = _client()
+    state_path = tmp_path / "state.json"
+    state_path.write_text('{"skey":"SK","sid":"SI"}', encoding="utf-8")
+    c._bot.client = AsyncMock()
+    c._bot.client.post = AsyncMock(return_value=MagicMock())
+    c._bot.entry_host = "szfilehelper.weixin.qq.com"
+    c._bot.state_path = state_path
+    c._bot.skey = "SK"; c._bot.sid = "SI"; c._bot.uin = "U"; c._bot.pass_ticket = "PT"
+    c._bot.is_logged_in = True
+
+    await c.logout()
+
+    assert not state_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_logout_tolerates_missing_state_file(tmp_path):
+    c = _client()
+    state_path = tmp_path / "state.json"
+    c._bot.client = AsyncMock()
+    c._bot.client.post = AsyncMock(return_value=MagicMock())
+    c._bot.entry_host = "szfilehelper.weixin.qq.com"
+    c._bot.state_path = state_path
+    c._bot.skey = "SK"; c._bot.sid = "SI"; c._bot.uin = "U"; c._bot.pass_ticket = "PT"
+
+    await c.logout()  # 必须不抛异常
+
+    assert not state_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_restore_session_false_after_logout(tmp_path):
+    from printshop.vendor.direct_bot import WeChatHelperBot
+
+    bot = WeChatHelperBot(entry_host="szfilehelper.weixin.qq.com")
+    bot.client = AsyncMock()
+    bot.state_path = tmp_path / "state.json"
+    bot.state_path.write_text(
+        json.dumps({"skey": "SK", "sid": "SI", "uin": "U",
+                    "pass_ticket": "PT", "cookies": []}),
+        encoding="utf-8",
+    )
+    c = WeChatClient(entry_host="szfilehelper.weixin.qq.com")
+    c._bot = bot
+    assert await c.restore_session() is True
+
+    bot.client.post = AsyncMock(return_value=MagicMock())
+    await c.logout()
+
+    assert not bot.state_path.exists()
+    assert await c.restore_session() is False
 
 
 def test_is_authed_delegates_to_vendor():
