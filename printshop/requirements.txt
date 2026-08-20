@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+httpx
+pydantic
+pillow
+pymupdf
+pywin32
+opencv-python-headless
+pystray
+pytest
+pytest-asyncio
