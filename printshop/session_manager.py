@@ -129,32 +129,43 @@ class SessionManager:
         msgs = await self._wx.fetch_messages()
         if not msgs:
             return
-        new_msgs = []
-        for m in msgs:
-            mid = m.get("id")
-            if mid in self._seen_msg_ids:
-                continue
-            self._seen_msg_ids.add(mid)
-            new_msgs.append(m)
-        if not new_msgs:
+        pending = [m for m in msgs if m.get("id") not in self._seen_msg_ids]
+        if not pending:
             return
+        new_msgs = []
+        batch_seen = set()
+        for m in pending:
+            mid = m.get("id")
+            if mid in batch_seen:
+                continue
+            batch_seen.add(mid)
+            new_msgs.append(m)
         files = [m for m in new_msgs
                  if not m.get("is_mine", False) and m.get("type") in ("file", "image")]
         if files:
             self._transition(SessionState.RECEIVING)
+        received_any = False
         try:
             for m in new_msgs:
+                mid = m.get("id")
                 if m.get("is_mine", False):
+                    self._seen_msg_ids.add(mid)
                     continue
                 mtype = m.get("type")
                 if mtype in ("file", "image"):
-                    await self._receive_file(m)
+                    try:
+                        await self._receive_file(m)
+                    except Exception:
+                        continue
+                    self._seen_msg_ids.add(mid)
+                    received_any = True
                 elif mtype == "text":
                     self._note = m.get("text", "")
+                    self._seen_msg_ids.add(mid)
         finally:
             if files:
                 self._transition(SessionState.CONNECTED)
-        if files:
+        if received_any:
             self._no_file_reminder = False
             self._last_file_ts = time.monotonic()
 

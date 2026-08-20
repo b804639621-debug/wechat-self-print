@@ -240,6 +240,25 @@ async def test_duplicate_message_ignored(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_failed_download_retried_next_fetch(tmp_path):
+    cfg = Config(); cfg.inbox_dir = tmp_path
+    store = MagicMock()
+    sm = SessionManager(cfg, MagicMock(), store)
+    sm.state = SessionState.CONNECTED
+    msg = {"id": "m1", "type": "file", "file_name": "a.pdf", "is_mine": False}
+    sm._wx.fetch_messages = AsyncMock(return_value=[msg])
+    sm._wx.download = AsyncMock(side_effect=[RuntimeError("network"), b"PDF"])
+    await sm._process_messages()
+    store.add.assert_not_called()
+    assert sm.file_count == 0
+    assert not (tmp_path / "a.pdf").exists()
+    await sm._process_messages()
+    store.add.assert_called_once()
+    assert (tmp_path / "a.pdf").read_bytes() == b"PDF"
+    assert sm.file_count == 1
+
+
+@pytest.mark.asyncio
 async def test_filename_conflict_adds_suffix(tmp_path):
     cfg = Config(); cfg.inbox_dir = tmp_path
     (tmp_path / "a.pdf").write_bytes(b"existing")
