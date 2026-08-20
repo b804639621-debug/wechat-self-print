@@ -6,3 +6,10 @@ work/
 *.db
 vendor-ref/
 node_modules/
+
+# 测试样本与运行产物（顾客/店内文件属隐私，绝不入库）
+test.pdf
+调查令-30(1).pdf
+tools/test-print.pdf
+tools/SumatraPDF-settings.txt
+tools/sumatrapdfcache/
