@@ -112,3 +112,50 @@ OpenCV `QRCodeDetector` 解码 `/qr` 下载的图片，输出：
 - **打印主路径改为：normalize（格式归一到 PDF）→ PyMuPDF 原页渲染 PNG（300dpi，含印章/注释）→ 打包 XPS → `PrintQueue.AddJob` + PrintTicket（彩色/灰度、单双面、A4、份数）**。页码范围在渲染层选取。python 侧调 .NET：pythonnet，或生成 XPS 后由一小段 PowerShell/C# 助手提交（Task 4 定夺，优先 pythonnet）。
 - SumatraPDF 降级为备用/调试用（`-print-to` 单面场景本机已验证可用）。
 - **KONICA MINOLTA C266 未测**——Task 4 应对其做同款 XPS 双面验证（预期同样工作，但需实测）。
+
+### 附：为什么不做"PDF 不渲染直打"（2026-08-21 问答结论）
+
+**问**：管理员电脑能直接打开 PDF，PDF 能否不渲染直接打印？
+
+**答：不能，也不必。** 理由：
+
+1. Windows 打印队列只接受页面描述数据（GDI/EMF 或 XPS），PDF 字节无法直接进队列；绕过队列把 PDF 以 RAW 直发 9100 端口仅对带 PDF/PS 直打模块的商用机有意义，L6370 是主机渲染型墨仓机，无此能力。
+2. "能打开 PDF"≠"能程序化直打"：调默认阅读器的 `printto` 动词会弹窗、行为随默认应用（Edge/WPS/Adobe）漂移、无法静默控制双面/份数/纸张——不适合无人值守自助打印，这正是当初选命令行打印器的原因。
+3. **所有可行路径都要渲染，区别只在谁渲染、任务设置谁说了算**：SumatraPDF 打印也是内部光栅化后送驱动（并非"直打"）；XPS+PrintTicket 路径把渲染拿到自己手里（PyMuPDF），换来双面/纸张/彩色的确定性控制（实机 #7 全通过）。
+4. 质量顾虑的解法：渲染 DPI 做成配置项（默认 300，可升 600；墨仓机实际输出 300 与 600 肉眼差异很小，600 的代价是任务数据量约 4 倍、生成稍慢）。
+
+**Task 4 落地要求**：`Config` 增加渲染 DPI 配置项（如 `render_dpi: int = 300`）；XPS 打包层按 §7"PoC 踩坑"两条实现。
+
+---
+
+## 8. 追加：KONICA MINOLTA C266 验证（2026-08-21 上午）
+
+> ✅ **结论：XPS+PrintTicket 路径在 C266 实机全部正常**（一张纸双面、黑白、内容完整、尺寸正常）。但**提交 API 必须避开 `AddJob`**（见坑 3）。
+
+### 环境与能力
+
+- 队列 `KONICA MINOLTA C266SeriesPCL`，端口 192.168.31.167，**LPR 协议（515，队列名 print，SNMP public）**；ping/Web 管理页（PageScope `/wcd/`）均通。
+- 驱动能力（PrintCapabilities）：双面 ✅（长/短边均支持）；OutputColor 报告 Monochrome, Color（用户确认该机实际只出灰度/黑白）。
+- `MergeAndValidatePrintTicket`：TwoSidedLongEdge ✅、A4 ✅、Grayscale **被调和为 Monochrome**（ConflictResolved；该机"灰度"即黑白档）。
+
+### 实验记录
+
+| # | 路径 | 结果 |
+|---|---|---|
+| C1 | `PrintQueue.AddJob` 提交 XPS（双面+Monochrome+A4） | ❌ **调用挂起 >150s，任务从未创建**（无 800 spool 事件），两次复现 |
+| C2 | `Out-Printer` 文本探针（GDI 路径） | ✅ 秒过（事件 800→805 齐全）→ 队列/端口/设备完好，挂起为 AddJob 特异性 |
+| C3 | **`PrintQueue.CreateXpsDocumentWriter().Write(fixedDocSeq, ticket)`** | ✅ **秒级完成，实机双面黑白全正常**（spool 1,257,862 B / 2 页） |
+
+### 坑 3（Task 4 实现必读）
+
+- **`PrintQueue.AddJob` 在柯美 PCL 队列上挂起**（任务根本不创建）；Epson WSD 队列上同一调用正常。**统一提交 API 必须用 `CreateXpsDocumentWriter(...).Write(...)`**，两台机器都要用它复测（Epson 上该方法尚未实测，Task 4 补验）。
+- 诊断技巧：`Microsoft-Windows-PrintService/Operational` 事件日志本机默认开启，800/801/802/805/307/842 可精确判定"任务是否创建/是否送达设备"，比看队列列表可靠。
+
+### 两台打印机最终结论
+
+| 机型 | XPS+PrintTicket 双面 | 彩色 | 备注 |
+|---|---|---|---|
+| EPSON L6370 | ✅ 实机通过 | ✅（含红印章） | 用 AddJob 或 XpsWriter 均可；SumatraPDF 静默 duplex/paper 失效勿用 |
+| KONICA C266 | ✅ 实机通过 | 仅黑白（Monochrome） | **必须用 XpsWriter 提交**（AddJob 挂起） |
+
+**打印引擎统一方案已定案**：normalize → PyMuPDF 原页渲染（`render_dpi` 默认 300）→ XPS 打包（注意 §7 坑 1/2）→ `XpsDocumentWriter.Write` + PrintTicket（A4/单双面/Color 或 Monochrome/份数）。
