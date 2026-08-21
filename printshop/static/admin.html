@@ -247,6 +247,7 @@
     checked: {},
     ws: null,
     loadingPreview: false,
+    previewUrl: null,
     saving: false,
     savedPrinter: ""
   };
@@ -268,7 +269,6 @@
 
   function api(path, opts) {
     return fetch(path, opts).then(function (r) {
-      var ct = r.headers.get("content-type") || "";
       return r.text().then(function (text) {
         var data = null;
         try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
@@ -464,11 +464,12 @@
   function updateBatchBtn() {
     var n = Object.keys(S.checked).length;
     var b = $("batch-btn");
-    b.disabled = n === 0;
+    b.disabled = n === 0 || S.saving;
     b.textContent = "批量打印 (" + n + ")";
   }
 
   function refreshJobs(keepSelection) {
+    // 参数 keepSelection 保留为调用方兼容位，函数体未使用
     return api("/api/jobs").then(function (jobs) {
       S.jobs = jobs || [];
       S.jobsById = {};
@@ -490,7 +491,11 @@
   }
 
   function clearPreview() {
-    $("preview-img").style.display = "none";
+    var img = $("preview-img");
+    img.style.display = "none";
+    img.onerror = null;  // 先摘监听：空 src 会被解析为当前页 URL 而异步触发 error，误弹"加载失败"
+    img.src = "";
+    if (S.previewUrl) { URL.revokeObjectURL(S.previewUrl); S.previewUrl = null; }
     $("preview-placeholder").textContent = "请选择左侧文件查看预览";
     $("preview-placeholder").style.display = "block";
     $("preview-title").textContent = "未选择文件";
@@ -508,6 +513,7 @@
     renderJobs();
     if (job.category === "other") {
       $("preview-img").style.display = "none";
+      if (S.previewUrl) { URL.revokeObjectURL(S.previewUrl); S.previewUrl = null; }
       $("preview-placeholder").style.display = "block";
       $("preview-placeholder").textContent = "该文件格式不支持预览（标红文件）";
       $("preview-title").textContent = job.file_name;
@@ -524,14 +530,19 @@
     if (!id || S.loadingPreview) return;
     var job = S.jobsById[id];
     if (!job || job.category === "other") return;
+    var reqJobId = id;   // 发起请求时记录选中任务与页码，防止旧响应覆盖新预览
+    var reqPage = S.curPage;
     S.loadingPreview = true;
+    updatePageIndicator();
     $("preview-placeholder").style.display = "block";
     $("preview-placeholder").textContent = "加载中…";
     $("preview-img").style.display = "none";
     $("preview-title").textContent = job.file_name;
-    fetch("/api/jobs/" + id + "/preview?page=" + S.curPage).then(function (r) {
+    fetch("/api/jobs/" + id + "/preview?page=" + reqPage).then(function (r) {
+      if (S.selId !== reqJobId || S.curPage !== reqPage) return; // 已切换，丢弃旧响应
       if (!r.ok) {
         return r.json().catch(function () { return {}; }).then(function (d) {
+          if (S.selId !== reqJobId || S.curPage !== reqPage) return; // 已切换，丢弃旧响应
           var msg = (d && d.error) || ("预览失败 HTTP " + r.status);
           if (r.status === 400 && /页码|渲染/.test(msg)) {
             clampMaxPage();
@@ -546,19 +557,38 @@
         });
       }
       return r.blob().then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        if (S.selId !== reqJobId || S.curPage !== reqPage) {
+          URL.revokeObjectURL(url);
+          return;
+        }
         var img = $("preview-img");
         img.onload = function () {
           $("preview-placeholder").style.display = "none";
           img.style.display = "block";
         };
-        img.src = URL.createObjectURL(blob);
+        img.onerror = function () {
+          if (S.previewUrl === url) { URL.revokeObjectURL(url); S.previewUrl = null; }
+          $("preview-placeholder").style.display = "block";
+          $("preview-placeholder").textContent = "预览加载失败";
+          toast("预览加载失败", "error");
+        };
+        if (S.previewUrl) URL.revokeObjectURL(S.previewUrl); // 释放上一张预览
+        S.previewUrl = url;
+        img.src = url;
       });
     }).catch(function () {
+      if (S.selId !== reqJobId || S.curPage !== reqPage) return; // 已切换，丢弃旧响应
       $("preview-placeholder").style.display = "block";
       $("preview-placeholder").textContent = "预览请求失败";
       toast("预览请求失败", "error");
     }).then(function () {
       S.loadingPreview = false;
+      if (S.selId !== reqJobId || S.curPage !== reqPage) {
+        // 请求期间切换了文件或页码，重新加载当前选中文件的预览
+        loadPreview();
+        return;
+      }
       updatePageIndicator();
       if (needReload) { needReload = false; return loadPreview(); }
       if (job && !job.page_count && S.selId === id) {
@@ -579,7 +609,9 @@
     if (!job || job.category === "other") return;
     var total = S.maxPage ? S.maxPage : "?";
     $("page-indicator").textContent = "第 " + (S.curPage + 1) + " / " + total + " 页";
-    $("prev-page").disabled = S.curPage <= 0;
+    $("prev-page").disabled = S.loadingPreview || S.curPage <= 0;
+    $("next-page").disabled = S.loadingPreview ||
+      (S.maxPage !== null && S.curPage + 1 >= S.maxPage);
   }
 
   function updateSelFile() {
@@ -595,10 +627,14 @@
     var isOther = job && job.category === "other";
     var isFailed = job && job.status === "failed";
     var isFinished = job && (job.status === "done" || job.status === "discarded");
-    $("print-btn").disabled = !job || isOther || isFinished || !$("printer").value;
+    var isBusy = S.saving || (job && job.status === "printing");
+    $("print-btn").disabled = isBusy || !job || isOther || isFinished || !$("printer").value;
     $("retry-btn").style.display = isFailed ? "" : "none";
+    $("retry-btn").disabled = isBusy || !isFailed;
     $("open-btn").style.display = isOther ? "none" : "";
-    $("discard-btn").disabled = !job || isFinished;
+    $("open-btn").disabled = isBusy || !job;
+    $("opendir-btn").disabled = isBusy || !job;
+    $("discard-btn").disabled = isBusy || !job || isFinished;
     if (isOther) $("opendir-btn").style.display = "";
   }
 
@@ -612,6 +648,9 @@
       return j && j.status !== "done" && j.status !== "discarded";
     });
     if (!ids.length) { toast("所选文件已全部处理完毕", "error"); return; }
+    S.saving = true; // 防连点：立即锁定打印相关按钮
+    updateSettingsButtons();
+    updateBatchBtn();
     ids.forEach(function (id) {
       var job = S.jobsById[id];
       if (job) job.status = "printing";
@@ -638,6 +677,11 @@
       else toast("完成 " + okCount + " 个，失败 " + failCount + " 个", "error");
     }).catch(function (err) {
       toast("打印请求失败：" + err.message, "error");
+      refreshJobs(true); // 失败时回退乐观状态，恢复真实状态
+    }).then(function () {
+      S.saving = false; // 解锁按钮
+      updateSettingsButtons();
+      updateBatchBtn();
     });
   }
 
@@ -734,12 +778,14 @@
     });
 
     $("batch-btn").addEventListener("click", function () {
+      if (S.saving) return; // 打印进行中，忽略连点
       var ids = getSelectedIds();
       if (!ids.length) { toast("请先勾选文件", "error"); return; }
       afterAction(ids);
     });
 
     $("print-btn").addEventListener("click", function () {
+      if (S.saving) return; // 打印进行中，忽略连点
       var job = S.selId ? S.jobsById[S.selId] : null;
       if (!job) { toast("请先选择文件", "error"); return; }
       if (job.category === "other") { toast("该文件格式不支持打印", "error"); return; }
@@ -748,6 +794,7 @@
     });
 
     $("retry-btn").addEventListener("click", function () {
+      if (S.saving) return; // 打印进行中，忽略点击
       var job = S.selId ? S.jobsById[S.selId] : null;
       if (!job) return;
       api("/api/jobs/" + job.id + "/retry", { method: "POST" }).then(function () {
@@ -759,22 +806,37 @@
     });
 
     $("open-btn").addEventListener("click", function () {
+      if (S.saving) return; // 打印进行中，忽略点击
       var job = S.selId ? S.jobsById[S.selId] : null;
       if (!job || job.category === "other") return;
       api("/api/jobs/" + job.id + "/open", { method: "POST" })
-        .then(function () { toast("已用默认程序打开", "success"); })
+        .then(function (res) {
+          if (res && res.ok === false) {
+            toast(res.error || "打开失败", "error");
+            return;
+          }
+          toast("已用默认程序打开", "success");
+        })
         .catch(function (err) { toast("打开失败：" + err.message, "error"); });
     });
 
     $("opendir-btn").addEventListener("click", function () {
+      if (S.saving) return; // 打印进行中，忽略点击
       var job = S.selId ? S.jobsById[S.selId] : null;
       if (!job) return;
       api("/api/jobs/" + job.id + "/open_dir", { method: "POST" })
-        .then(function () { toast("已在资源管理器中定位", "success"); })
+        .then(function (res) {
+          if (res && res.ok === false) {
+            toast(res.error || "打开失败", "error");
+            return;
+          }
+          toast("已在资源管理器中定位", "success");
+        })
         .catch(function (err) { toast("打开失败：" + err.message, "error"); });
     });
 
     $("discard-btn").addEventListener("click", function () {
+      if (S.saving) return; // 打印进行中，忽略点击
       var job = S.selId ? S.jobsById[S.selId] : null;
       if (!job) return;
       if (!confirm("确定作废文件「" + job.file_name + "」吗？")) return;
@@ -807,12 +869,13 @@
     });
 
     $("prev-page").addEventListener("click", function () {
-      if (S.curPage <= 0) return;
+      if (S.loadingPreview || S.curPage <= 0) return; // 请求在途时不得翻页，避免页码与图片不一致
       S.curPage--;
       loadPreview();
     });
 
     $("next-page").addEventListener("click", function () {
+      if (S.loadingPreview) return; // 请求在途时不得翻页，避免页码与图片不一致
       if (S.maxPage !== null && S.curPage + 1 >= S.maxPage) return;
       S.curPage++;
       loadPreview();
