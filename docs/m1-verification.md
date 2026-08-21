@@ -90,21 +90,25 @@ OpenCV `QRCodeDetector` 解码 `/qr` 下载的图片，输出：
 | 3 | SumatraPDF `-print-dialog` 驱动对话框手动选双面 | A4+双面长边 | ✅ **一张纸双面，无报警** |
 | 4 | 先 `Set-PrintConfiguration` 默认=双面/A4/彩色，静默仅带 `fit` | — | ❌ 仍报警+单面 |
 | 5 | 新建 TCP/IP:9100 队列（排除 WSD 因素），同 1 参数 | `color,duplexlong,fit,paper=A4` | ❌ 仍报警+单面 |
+| 6 | **XPS + PrintTicket 系统打印路径**（`PrintQueue.AddJob`，A4+双面长边+彩色） | v1 PoC | ✅ **双面成功、无报警**；❌ 尺寸缩至 ~64%、红印章丢失（PoC 自身两个 bug，见下） |
+| 7 | 同 6，修复 PoC bug 后 | v2 PoC | ✅✅ **双面+彩色+印章+尺寸全部正常，面板无报警** |
 
 ### 结论（systematic-debugging）
 
 - **硬件+驱动+面板链路完好**：驱动对话框手动双面成功（#3）。
-- **SumatraPDF 3.6.1 静默打印的 `-print-settings` 中 `duplex`/`paper` 对该 Epson 驱动不生效**（dmColor 经默认配置无法区分是否生效；duplex/paper 确认被丢弃），任务始终以"文档自身尺寸 Letter + 单面"下发 → 与面板登记 A4 不匹配 → 停机 → 强制继续后保持单面。
+- **SumatraPDF 3.6.1 静默打印的 `-print-settings` 中 `duplex`/`paper` 对该 Epson 驱动不生效**（duplex/paper 确认被丢弃），任务始终以"文档自身尺寸 Letter + 单面"下发 → 与面板登记 A4 不匹配 → 停机 → 强制继续后保持单面。
 - 排除项：纸张尺寸值本身（#1 A4 也失败）、驱动默认配置继承（#4）、WSD 端口（#5 换 TCP/IP 无效）。
-- 与官方文档对照：`-print-settings` 的 `duplex*`/`paper=` 依赖驱动接受合并后的 DEVMODE，Epson 此驱动（L6370 Series）拒绝了合并。
+- **解法已实测定论：走系统打印服务的 PrintTicket 路径（XPS）**——`MergeAndValidatePrintTicket` 零纸张验证驱动接受 TwoSidedLongEdge+Color+A4（NoConflict），实机 #7 全通过。**问题回答：能解决。**
 - 测试后已恢复 WSD 队列默认配置（OneSided/Color/A4）；新增队列 `EPSON L6370 (TCP)`（端口 IP_192.168.31.32:9100）保留备用。
+- PoC 产物：`tools/poc/make_xps.py`、`tools/poc/poc-duplex-v2.xps`（未提交）。
 
-### 对项目的影响与候选方案（Task 4 定夺）
+### PoC 踩坑（Task 4 实现必读）
 
-1. **页面尺寸归一化**（建议无论双面方案如何都做）：`normalize_to_pdf` 时把非 A4 页面缩放嵌入 A4 页面（PyMuPDF `show_pdf_page`），消除 Letter-vs-A4 面板停机，也符合店内 A4 纸实际。
-2. **双面下发候选**：
-   - a. 放弃 SumatraPDF 传 duplex，改用 pywin32：取驱动自产 DEVMODE（`DocumentProperties`）→ 改 `dmDuplex/dmColor` → 自渲染页面位图经 GDI 打印（工作量大但全可控）；
-   - b. 调研 Epson 驱动是否有"接受外部 DEVMODE"的开关/新旧版本差异（用户手动排查方向）；
-   - c. 更换打印后端（如 MuPDF `mutool print` 或 Ghostscript `mswinpr2` 设备）后再测该机双面；
-   - d. 降级文案：双面选项对 Epson 提示"可能需在打印机面板确认"。
-- **KONICA MINOLTA C266 未测**——若店内以柯美为主力机，建议在 Task 4 时对其做同款双面验证，可能不受此问题影响。
+1. **❌ 勿用 PyMuPDF `show_pdf_page` 做页面归一化**——它只搬内容流主体，丢失了本文件的红印章（印章是内容流中的透明组图像，非注释）。✅ 正确做法：原始页面直接 `get_pixmap()` 渲染，尺寸适配放在 XPS 层（Viewport）。
+2. **XPS `ImageBrush` 的 `Viewbox` 单位坑**：PyMuPDF 输出的 PNG 带 pHYs（如 150/300dpi），XPS 按 dpi 换算自然尺寸（像素×96/dpi，单位 1/96 英寸）。Viewbox 必须填**自然尺寸**而非像素值，否则内容按比例缩小（v1 因此缩到 64%）。
+
+### 对项目的影响（Task 4 打印引擎调整）
+
+- **打印主路径改为：normalize（格式归一到 PDF）→ PyMuPDF 原页渲染 PNG（300dpi，含印章/注释）→ 打包 XPS → `PrintQueue.AddJob` + PrintTicket（彩色/灰度、单双面、A4、份数）**。页码范围在渲染层选取。python 侧调 .NET：pythonnet，或生成 XPS 后由一小段 PowerShell/C# 助手提交（Task 4 定夺，优先 pythonnet）。
+- SumatraPDF 降级为备用/调试用（`-print-to` 单面场景本机已验证可用）。
+- **KONICA MINOLTA C266 未测**——Task 4 应对其做同款 XPS 双面验证（预期同样工作，但需实测）。
