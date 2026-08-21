@@ -159,3 +159,25 @@ OpenCV `QRCodeDetector` 解码 `/qr` 下载的图片，输出：
 | KONICA C266 | ✅ 实机通过 | 仅黑白（Monochrome） | **必须用 XpsWriter 提交**（AddJob 挂起） |
 
 **打印引擎统一方案已定案**：normalize → PyMuPDF 原页渲染（`render_dpi` 默认 300）→ XPS 打包（注意 §7 坑 1/2）→ `XpsDocumentWriter.Write` + PrintTicket（A4/单双面/Color 或 Monochrome/份数）。
+
+---
+
+## 9. 追加：图片 + Word 双机验证（2026-08-21 上午）
+
+> ✅ **结论：图片（contain-fit 不裁切）与 Word 文件在两台打印机全部正常**（4 张出纸：Epson 彩色 ×2、柯美黑白 ×2，无面板报警，无需人工干预）。
+
+### 样本与方法
+
+- `test/22.png`（68,095 B，手机截图竖图）：图片按 **contain**（等比完整放入 A4、居中、不裁切——即用户要求的"不选适应边框"）排版进 XPS。
+- `test/强制执行申请书.docx`（18,707 B）：**LibreOffice 未安装**；改用本机已装的 **Microsoft Office（WINWORD.EXE, Office16）COM 自动化** `ExportAsFixedFormat` 转 PDF（1 页完整），再按 PDF 路径渲染。
+- 提交：统一 `XpsDocumentWriter.Write` + PrintTicket（A4、单面、Epson=Color / C266=Monochrome）。
+- 打印事件日志（PrintService/Operational 307）：job 9-12 全部 1 页无干预完成。
+
+### 工具沉淀
+
+- `tools/poc/file_to_xps.py`：通用 **PDF/图片 → XPS** 打包器（Task 4 直接以此为起点；图片去透明通道、白底、contain-fit）。
+
+### 对 Task 4 的补充结论
+
+- **Office 转换双轨制**：本机有 Office 时优先 Word/Excel/PowerPoint COM 转换（保真度高）；无 Office 时用 LibreOffice（计划原方案）。`normalize_to_pdf` 按 `soffice_path` 存在性 + Office COM 可用性二选一，均失败则标红提示。
+- 图片打印默认策略 = contain（完整可见、可能留白边），与 spec 界面文案一致；若未来要"铺满裁切"再单独加选项。
