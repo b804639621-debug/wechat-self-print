@@ -39,7 +39,9 @@ E:\kaifa\自助打印\
 │   ├── static/admin.html       # 管理界面（单文件，原生 JS）
 │   ├── static/screen.html      # 开发期辅助屏幕页（调试用）
 │   └── tests/                  # pytest
-├── firmware/print_screen/print_screen.ino   # ESP32-C6 固件
+├── firmware/print_screen/        # ESP32-C6 固件
+│   │   ├── print_screen.ino      # 主程序（配网/轮询/二维码/触摸唤醒）
+│   │   └── lcd_touch.cpp/.h, user_config.h  # 微雪例程 09_LVGL_V9_Test 复制（CO5300+CST9220+引脚）
 ├── tools/SumatraPDF.exe        # 便携版打印器
 ├── assets/signage.html         # 柜台立牌（打印成 A5）
 └── inbox/                      # 顾客文件收件目录（运行时生成，gitignore）
@@ -638,6 +640,7 @@ main.py 中实例化并 `run_thread()`；后台任务定期按 SessionManager.st
 
 **Files:** Modify: 联调中发现的缺陷修复
 
+- [ ] **Step 0: 部署前置检查**：店内路由器**关闭 AP 隔离**（否则小屏/手机访问不到主控，最高发坑）；安装 LibreOffice（Task 4 遗留：office 转换此前仅 mock 测试，本任务需实测 docx→PDF→打印）；若 Task 10 已完成，小屏与调试页 `/screen` 同屏对照
 - [ ] **Step 1: 按 spec §3.1 主流程走查**：点托盘 → 小屏/调试页出码 → 手机扫码 → 确认登录 → 发 3 个文件（PDF+图片+docx）+ 1 条文字 → 管理端弹窗/备注横幅 → 预览 → 灰度双面打印到实机 → 完成服务 → 确认 inbox 清空、会话登出、任务归档
 - [ ] **Step 2: 按 spec §3.2 异常表逐项注入**：断网/掉线恢复、扫码不确认超时、5 分钟无文件提醒、打印失败重打、zip 标红
 - [ ] **Step 3: 缺陷修复并补回归测试** → **Step 4: Commit** `fix: 端到端联调问题修复`
@@ -648,21 +651,36 @@ main.py 中实例化并 `run_thread()`；后台任务定期按 SessionManager.st
 
 **Files:**
 - Create: `firmware/print_screen/print_screen.ino`
+- Create: `firmware/print_screen/lcd_touch.cpp`、`lcd_touch.h`、`user_config.h`（从微雪例程仓 `02_Example/Arduino-v3.3.3/09_LVGL_V9_Test/` 原样复制——CO5300 显示 + CST9220 触摸 + 全部引脚定义都在其中，勿改）
 - Test: 无自动化，烧录人工 checklist
 
 **Interfaces:**
 - Consumes: `GET http://<主控IP>:8000/api/screen/state` → `{state, display, qr_content, file_count, message}`；触摸唤醒时 `POST /api/screen/wake`
 
-- [ ] **Step 1: 环境**：Arduino IDE + esp32 core 3.x + 库（WiFiManager、ArduinoJson、ricmoo/QRCode）+ 微雪官方 Gitee 例程仓 `waveshare/ESP32-C6-Touch-AMOLED-2.16` 的 CO5300 驱动文件（`Arduino_GFX` 或官方 `.ino` 例程中的驱动段）
+**并行性**：本任务只依赖 Task 6 的接口契约，不等 Task 9——可用 Python stub 返回固定 JSON 先行开发固件，与 Task 7/8/9 并行。
 
-- [ ] **Step 2: 实现**，结构：
+- [ ] **Step 1: 环境搭建（版本与仓库结构已核实，照做）**
+
+1. Arduino IDE 2.x；开发板管理器 URL 加 `https://espressif.github.io/arduino-esp32/package_esp32_index.json`，安装 **esp32 core 3.3.x**（与例程同代，C6 必须 3.x）
+2. 板型选 **ESP32C6 Dev Module**；Tools 菜单对照例程仓根目录的 `Tools Configuration.png` 截图：Flash Size 16MB，**USB CDC On Boot = Enabled**（C6 原生 USB 直连，不开则串口监视器无日志）
+3. 库管理器装：`WiFiManager`（tzapu）、`ArduinoJson`、`ricmoo/QRCode`。⚠️ 伪码 `StaticJsonDocument<512>` 是 ArduinoJson **v6** 写法；装到 v7 就改成 `JsonDocument doc`（二选一，别混）
+4. 克隆 `https://gitee.com/waveshare/ESP32-C6-Touch-AMOLED-2.16`（结构：`01_Arduino_Libraries` = XPowersLib+lvgl8/9；`02_Example/Arduino-v3.3.3` = 9 个例程）：
+   - 把 `01_Arduino_Libraries/XPowersLib` 拷进 Arduino 库目录——**AXP2101 电源管理必须**：这块板子屏幕供电走 AXP2101，**不初始化 PMU 屏不会亮**（最高发坑）
+   - 从 `02_Example/Arduino-v3.3.3/09_LVGL_V9_Test/` 复制 `lcd_touch.cpp/.h` + `user_config.h` 到本 sketch；**LVGL 本身不装**（本项目 UI 极简，直绘即可）
+5. 先跑通两个官方例程验硬件：`01_AXP2101_Test` → `09_LVGL_V9_Test`（屏亮、触摸有反应 = 硬件与驱动 OK）
+
+- [ ] **Step 2: 实现**，结构（已按板子实况修订）：
 
 ```cpp
-// 依赖：WiFiManager, ArduinoJson, qrcode(ricmoo), Arduino_GFX + CO5300(微雪例程)
-// 全局：TFT 驱动对象 gfx、lastPoll、lastState、String qrShown
+// 依赖：WiFiManager, ArduinoJson(v6 写法), qrcode(ricmoo), XPowersLib(AXP2101)
+// + 微雪例程 lcd_touch.cpp/.h、user_config.h（CO5300 显示 + CST9220 触摸 + 引脚定义）
+// 全局：lastPoll、String qrShown
 
 void setup() {
-  initDisplay();            // CO5300 初始化，亮度 80%（烧屏防护#2）
+  // 初始化顺序严格照 09_LVGL_V9_Test 例程：AXP2101(PMU) → CO5300 显示 → CST9220 触摸
+  initPMU();              // XPowersLib；不初始化 PMU 屏不会亮
+  initDisplay();          // lcd_touch.cpp 封装；亮度 80%（烧屏防护#2）
+  initTouch();            // CST9220
   wifiManager.autoConnect("PRINT-SETUP");  // 首次配网
   showText("等待主控...");
 }
@@ -670,14 +688,14 @@ void setup() {
 void loop() {
   if (millis() - lastPoll < 1500) { handleTouch(); return; }  // 1.5s 轮询
   lastPoll = millis();
-  StaticJsonDocument<512> doc;
+  StaticJsonDocument<512> doc;   // ArduinoJson v7 则改为 JsonDocument doc
   if (!httpGetJson("http://" SERVER_IP ":8000/api/screen/state", doc)) { showText("系统维护中"); return; }
   bool display = doc["display"] == "on";
   String state = doc["state"].as<String>();
-  if (!display) { screenOff(); return; }                       // 全黑填充（烧屏防护#3配合）
+  if (!display) { screenOff(); return; }   // 优先用 lcd_touch.cpp 封装的 CO5300 displayOff/sleep（若有），否则全黑填充（烧屏防护#3）
   if (state == "IDLE") {
     String qr = doc["qr_content"].as<String>();
-    if (qr != qrShown) { qrShown = qr; drawQR(qr); }           // 绘制起点随机±10px（烧屏防护#1）
+    if (qr != qrShown) { qrShown = qr; drawQR(qr); }
   } else {
     qrShown = "";
     showStatus(state, (int)doc["file_count"]);  // SCANNED/CONNECTED/RECEIVING/PRINTING 文案见 spec §6.1 表
@@ -687,23 +705,34 @@ void loop() {
 void drawQR(const String& content) {
   QRCode qrc; uint8_t qrcodeData[qrcode_getBufferSize(3)];
   qrcode_initText(&qrc, qrcodeData, 3, ECC_MEDIUM, content.c_str());
-  int scale = 6, size = qrc.size * scale;
-  int ox = (480 - size) / 2 + random(-10, 10);   // 随机偏移
+  const int scale = 9;                          // 480px/2.16寸≈222ppi：scale=6 实物仅约2cm，柜台距离难扫；9~10 → 约3cm+
+  int size = qrc.size * scale;
+  int ox = (480 - size) / 2 + random(-10, 10);  // 随机偏移（烧屏防护#1），注意偏移后静区不出屏
   int oy = (480 - size) / 2 + random(-10, 10);
-  gfx->fillScreen(BLACK);
-  for (int y = 0; y < qrc.size; y++)
+  gfx->fillScreen(WHITE);                       // 白底黑码：微信对反色码兼容性因手机而异，正色更保险（AMOLED 白底功耗高，但亮屏短+亮度80%+偏移，烧屏风险可控；iOS+安卓扫码验证兜底）
+  for (int y = 0; y < qrc.size; y++)            // 静区：码四周 ≥4 模块宽白边，白底天然满足
     for (int x = 0; x < qrc.size; x++)
-      if (qrcode_getModule(&qrc, x, y)) gfx->fillRect(ox + x*scale, oy + y*scale, scale, scale, WHITE);
-  drawFooter("微信扫码·传文件打印");
+      if (qrcode_getModule(&qrc, x, y)) gfx->fillRect(ox + x*scale, oy + y*scale, scale, scale, BLACK);
+  drawFooter("微信扫码·传文件打印");            // 黑字
 }
 
-void handleTouch() {  // CST9220 触摸中断 → POST /api/screen/wake（触摸唤醒增强）
+void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST /api/screen/wake
   if (touchTapped()) { httpPost("http://" SERVER_IP ":8000/api/screen/wake"); delay(800); }
 }
 ```
 
-- [ ] **Step 3: 人工验证 checklist**：首次配网 ✓ 息屏/点亮切换 ≤2s ✓ 二维码微信可扫（iOS+安卓各一）✓ 状态文案切换 ✓ 触摸唤醒 ✓ 连续 2 小时待机无异常 ✓
-- [ ] **Step 4: Commit** `feat: ESP32 小屏固件`
+- `SERVER_IP` 写死主控固定 IP 即可满足 MVP；可选增强：WiFiManager 自定义参数把主控 IP 做成配网时可填（**不做进首版**）
+
+- [ ] **Step 3: 烧录与配网**
+
+1. USB-C 直连电脑，**C6 原生 USB 无需串口驱动**，选对应 COM 口直接上传
+2. 上传失败/认不出端口 → **按住板子侧边 BOOT 键再重新上电**进下载模式，然后正常上传
+3. 烧完开串口监视器（115200）看日志；无输出先查 USB CDC On Boot 是否 Enabled
+4. 首次启动固件自建热点 `PRINT-SETUP` → 手机连上 → 填店内 WiFi 密码存 Flash（WiFiManager 标准流程）
+5. ⚠️ **店内路由器必须关闭 AP 隔离**，否则小屏永远访问不到主控（现场最高发坑，列入部署前置检查）
+
+- [ ] **Step 4: 人工验证 checklist**：首次配网 ✓ 息屏/点亮切换 ≤2s ✓ 二维码微信可扫（iOS+安卓各一，顺带确认白底黑码极性决定）✓ 状态文案切换 ✓ 触摸唤醒 ✓ 连续 2 小时待机无异常 ✓ **与浏览器调试页 /screen 同屏对照（固件显示与主控状态一致）** ✓
+- [ ] **Step 5: Commit** `feat: ESP32 小屏固件`
 
 ---
 
@@ -745,4 +774,8 @@ void handleTouch() {  // CST9220 触摸中断 → POST /api/screen/wake（触摸
 
 - **Spec 覆盖**：§2 基线 1-7 → 无收费模块（符合）；打开文件编辑（Task 6 open/open_dir）；格式全收+标红（Task 4 classify/normalize + Task 7 标红）；多打印机+彩色灰度（Task 4/7）；单队列（Task 5）；隐私红线（Task 5 finish_service + Task 9 验证）；小屏硬件+烧屏 4 条+立牌（Task 10/13）；托盘唤醒+强制换码（Task 5 wake + Task 8）。§3 流程与异常（Task 5/9/11）。§6.1/6.2 界面（Task 6/7/10）。§7 打印引擎（Task 4）。§9 数据模型（Task 3）。§10 测试策略（各任务 TDD + Task 0/9 人工）。§12 里程碑 M1-M4 → Task 0 / 1-10 / 7+9 / 11-13。
 - **类型一致性**：`SessionState` 常量、`screen_state()` 字段名、`PrintOptions` 字段、`JobStore` 方法名在 Task 2-10 间一致；`WeChatClient` 接口以 vendor 实际代码为准的调整规则已在 Task 2 注明。
-- **已知风险点**（执行时关注）：vendor `direct_bot.py` 的方法签名与本计划假设可能有出入（Task 2 Step 1 先核对）；`qr_content` 拼接格式以 Task 0 Step 4 实测为准。
+- **已知风险点**（执行时关注）：vendor `direct_bot.py` 的方法签名与本计划假设可能有出入（Task 2 Step 1 先核对）；`qr_content` 拼接格式以 Task 0 Step 4 实测为准（M1 已确认 `https://login.weixin.qq.com/l/{uuid}`）；固件最高发坑=**AXP2101 PMU 未初始化导致屏不亮**与**路由器 AP 隔离**（Task 10 Step 1/3 已标注）。
+
+## 修订记录
+
+- 2026-08-21：依据 esp32-c6-touch-amoled-2-16 开发板专项会话（`esp32-c6-touch-amoled-2-16.json`，含微雪 Gitee 例程仓结构核实）修订 **Task 10**：环境搭建具体化（esp32 core 3.3.x / USB CDC On Boot / XPowersLib 必装 / 驱动文件来源 09_LVGL_V9_Test 的 lcd_touch.cpp/.h+user_config.h）；初始化顺序 AXP2101→CO5300→CST9220；二维码 scale 6→9~10、反色改白底黑码；触摸唤醒改轮询；补烧录与配网步骤（BOOT 键、AP 隔离）；checklist 加 /screen 同屏对照；注明可与 Task 7/8/9 并行。联动：**文件结构段**补固件驱动文件；**Task 9** 加 Step 0 部署前置检查（AP 隔离、装 LibreOffice、同屏对照）。
