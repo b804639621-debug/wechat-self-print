@@ -244,7 +244,7 @@ def submit_xps(xps: Path, o: PrintOptions) -> tuple[bool, str]:
             capture_output=True, timeout=300,
         )
     except ValueError as exc:
-        return False, str(exc)
+        return False, f"打印失败: {exc}"
     except Exception as exc:
         return False, f"提交执行失败: {exc}"
     finally:
