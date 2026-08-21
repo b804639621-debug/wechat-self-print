@@ -72,8 +72,10 @@ def main() -> None:
     cfg = Config()
     app = create_app(cfg)
     ctx = app.state.ctx
-    start_tray(base_url=f"http://127.0.0.1:{cfg.port}", get_state=lambda: ctx.sm.state)
-    uvicorn.run(app, host=cfg.host, port=cfg.port)
+    server = uvicorn.Server(uvicorn.Config(app, host=cfg.host, port=cfg.port))
+    start_tray(base_url=f"http://127.0.0.1:{cfg.port}",
+               get_state=lambda: ctx.sm.state, server=server)
+    server.run()
 
 
 if __name__ == "__main__":
