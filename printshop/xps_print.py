@@ -232,9 +232,10 @@ def submit_xps(xps: Path, o: PrintOptions) -> tuple[bool, str]:
     with tempfile.NamedTemporaryFile(
         "w", suffix=".xml", encoding="utf-8", delete=False
     ) as tf:
-        tf.write(print_ticket_xml(o))
         ticket_path = tf.name
     try:
+        # 写入放在 try 内：print_ticket_xml 参数校验抛错时 finally 仍能清理空临时文件
+        Path(ticket_path).write_text(print_ticket_xml(o), encoding="utf-8")
         r = subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
              "-File", str(ps1),
@@ -242,6 +243,8 @@ def submit_xps(xps: Path, o: PrintOptions) -> tuple[bool, str]:
              "-TicketPath", ticket_path],
             capture_output=True, timeout=300,
         )
+    except ValueError as exc:
+        return False, str(exc)
     except Exception as exc:
         return False, f"提交执行失败: {exc}"
     finally:
