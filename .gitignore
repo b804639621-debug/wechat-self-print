@@ -15,3 +15,10 @@ test.pdf
 tools/test-print.pdf
 tools/SumatraPDF-settings.txt
 tools/sumatrapdfcache/
+
+
+# PoC 产物（png/xps/临时文件不入库，源码 .py 入库）
+tools/poc/*.png
+tools/poc/*.xps
+tools/poc/*.pdf
+tools/poc/*_work/

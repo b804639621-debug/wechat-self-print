@@ -9,13 +9,10 @@ import pymupdf as fitz
 from PIL import Image
 
 from printshop.config import Config
-
-EXIT_CODES = {0: "", 2: "文件无法打开或格式不支持", 3: "文档禁止打印",
-              4: "打印机不存在", 5: "打印机驱动/设备失败", 6: "打印被策略禁止"}
+from printshop.xps_print import build_xps, submit_xps
 
 A4_WIDTH = 595.0
 A4_HEIGHT = 842.0
-A4_TOLERANCE = 2.0
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp"}
 _OFFICE_EXTS = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp"}
@@ -55,49 +52,84 @@ def classify_file(path: Path) -> str:
     return "other"
 
 
-def _is_a4(rect) -> bool:
-    w, h = rect.width, rect.height
-    return (abs(w - A4_WIDTH) <= A4_TOLERANCE and abs(h - A4_HEIGHT) <= A4_TOLERANCE) or \
-           (abs(w - A4_HEIGHT) <= A4_TOLERANCE and abs(h - A4_WIDTH) <= A4_TOLERANCE)
-
-
-def _fit_rect(rect, target: fitz.Rect) -> fitz.Rect:
-    scale = min(target.width / rect.width, target.height / rect.height)
-    w = rect.width * scale
-    h = rect.height * scale
-    x0 = (target.width - w) / 2
-    y0 = (target.height - h) / 2
-    return fitz.Rect(x0, y0, x0 + w, y0 + h)
-
-
-def normalize_page_size_to_a4(pdf: Path) -> Path:
-    """R3：逐页检查，非 A4 页面缩放嵌入 A4 页面（保持比例、居中）。已是 A4 则原样返回。"""
-    pdf = Path(pdf)
-    with fitz.open(str(pdf)) as doc:
-        if all(_is_a4(p.rect) for p in doc):
-            return pdf
-        a4 = fitz.Rect(0, 0, A4_WIDTH, A4_HEIGHT)
-        out = fitz.open()
-        try:
-            for page in doc:
-                if _is_a4(page.rect):
-                    out.insert_pdf(doc, from_page=page.number, to_page=page.number)
-                else:
-                    new_page = out.new_page(width=A4_WIDTH, height=A4_HEIGHT)
-                    new_page.show_pdf_page(_fit_rect(page.rect, a4), doc, page.number)
-            out_path = pdf.with_name(f"{pdf.stem}_a4.pdf")
-            out.save(str(out_path), garbage=3, deflate=True)
-        finally:
-            out.close()
-        return out_path
-
-
 def _unique_out(work_dir: Path, src: Path) -> Path:
     work_dir.mkdir(parents=True, exist_ok=True)
     return work_dir / f"{src.stem}-{uuid4().hex[:8]}.pdf"
 
 
+def _convert_with_office_com(src: Path, out: Path) -> bool:
+    """Office COM（win32com, ExportAsFixedFormat）转 PDF。可用且成功返回 True。"""
+    try:
+        import win32com.client
+    except ImportError:
+        return False
+    try:
+        ext = src.suffix.lower()
+        if ext in (".doc", ".docx"):
+            app = win32com.client.DispatchEx("Word.Application")
+            try:
+                app.Visible = False
+                doc = app.Documents.Open(str(src), ReadOnly=True)
+                try:
+                    doc.ExportAsFixedFormat(str(out), 17)  # wdExportFormatPDF
+                finally:
+                    doc.Close(False)
+            finally:
+                app.Quit()
+        elif ext in (".xls", ".xlsx"):
+            app = win32com.client.DispatchEx("Excel.Application")
+            try:
+                app.Visible = False
+                wb = app.Workbooks.Open(str(src), ReadOnly=True)
+                try:
+                    wb.ExportAsFixedFormat(0, str(out))  # xlTypePDF
+                finally:
+                    wb.Close(False)
+            finally:
+                app.Quit()
+        elif ext in (".ppt", ".pptx"):
+            app = win32com.client.DispatchEx("PowerPoint.Application")
+            try:
+                prs = app.Presentations.Open(str(src), ReadOnly=True)
+                try:
+                    prs.SaveAs(str(out), 32)  # ppSaveAsPDF
+                finally:
+                    prs.Close()
+            finally:
+                app.Quit()
+        else:
+            return False
+    except Exception:
+        return False
+    return out.exists()
+
+
+def _convert_with_soffice(src: Path, out: Path, cfg: Config) -> bool:
+    """LibreOffice headless 转 PDF。soffice 不可用返回 False，转换异常抛 RuntimeError。"""
+    soffice = Path(cfg.soffice_path)
+    if not soffice.exists():
+        return False
+    with tempfile.TemporaryDirectory(dir=str(out.parent)) as td:
+        r = subprocess.run(
+            [str(soffice), "--headless", "--convert-to", "pdf",
+             "--outdir", td, str(src)],
+            capture_output=True, timeout=180)
+        if r.returncode != 0:
+            raise RuntimeError(f"LibreOffice 转换失败，退出码 {r.returncode}")
+        produced = Path(td) / (src.stem + ".pdf")
+        if not produced.exists():
+            raise RuntimeError(f"LibreOffice 未生成输出文件: {src.name}")
+        shutil.copy(produced, out)
+    return True
+
+
 def normalize_to_pdf(src: Path, work_dir: Path, cfg: Config) -> Path:
+    """把源文件归一为 PDF。
+
+    Office 双轨制：Office COM（ExportAsFixedFormat）优先 → LibreOffice 兜底 →
+    均不可用抛 FileNotFoundError（界面标红）。图片转 PDF（白底去透明通道）。
+    返回的 PDF 不再做 A4 归一化——尺寸适配统一由 XPS 层 Viewport/Viewbox 完成。
+    """
     src = Path(src)
     work_dir = Path(work_dir)
     kind = classify_file(src)
@@ -106,26 +138,17 @@ def normalize_to_pdf(src: Path, work_dir: Path, cfg: Config) -> Path:
         shutil.copy(src, out)
     elif kind == "image":
         out = _unique_out(work_dir, src)
-        Image.open(src).convert("RGB").save(out, "PDF")
+        img = Image.open(src).convert("RGBA")
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[-1])  # 白底去透明通道
+        bg.save(out, "PDF")
     elif kind == "office":
-        soffice = Path(cfg.soffice_path)
-        if not soffice.exists():
-            raise FileNotFoundError("未安装 LibreOffice")
         out = _unique_out(work_dir, src)
-        with tempfile.TemporaryDirectory(dir=str(work_dir)) as td:
-            r = subprocess.run(
-                [str(soffice), "--headless", "--convert-to", "pdf",
-                 "--outdir", td, str(src)],
-                capture_output=True, timeout=180)
-            if r.returncode != 0:
-                raise RuntimeError(f"LibreOffice 转换失败，退出码 {r.returncode}")
-            produced = Path(td) / (src.stem + ".pdf")
-            if not produced.exists():
-                raise RuntimeError(f"LibreOffice 未生成输出文件: {src.name}")
-            shutil.copy(produced, out)
+        if not (_convert_with_office_com(src, out) or _convert_with_soffice(src, out, cfg)):
+            raise FileNotFoundError("未安装 Office 或 LibreOffice，无法转换 Office 文件")
     else:
         raise ValueError(f"不支持的文件类型: {src.name}")
-    return normalize_page_size_to_a4(out)
+    return out
 
 
 def get_page_count(pdf: Path) -> int:
@@ -138,16 +161,13 @@ def render_page_png(pdf: Path, page: int, dpi: int = 110) -> bytes:
         return doc[page].get_pixmap(dpi=dpi).tobytes("png")
 
 
-def build_print_cmd(cfg: Config, pdf: Path, o: PrintOptions) -> list[str]:
-    # 注：EPSON L6370 驱动会丢弃 SumatraPDF 下发的 duplex/paper 设置（M1 §7 已知未决，用户排查中），照常下发。
-    settings = ["color" if o.color else "monochrome", f"{o.copies}x",
-                o.duplex, f"paper={o.paper}", "fit"]
-    if o.pages.strip():
-        settings.insert(0, o.pages.strip())
-    return [str(cfg.sumatra_path), "-print-to", o.printer,
-            "-print-settings", ",".join(settings), "-silent", str(pdf)]
-
-
 def print_pdf(cfg: Config, pdf: Path, o: PrintOptions) -> tuple[bool, str]:
-    r = subprocess.run(build_print_cmd(cfg, pdf, o), capture_output=True, timeout=300)
-    return (r.returncode == 0, EXIT_CODES.get(r.returncode, f"未知错误码 {r.returncode}"))
+    """XPS 路径打印：渲染打包（render_dpi/pages）→ PrintTicket 提交。
+
+    对外契约不变：签名与返回语义与 SumatraPDF 时代一致，routes.py 无需改动。
+    """
+    work = Path(cfg.work_dir)
+    work.mkdir(parents=True, exist_ok=True)
+    xps_path = work / f"{Path(pdf).stem}-{uuid4().hex[:8]}.xps"
+    build_xps(pdf, xps_path, cfg.render_dpi, o.pages)
+    return submit_xps(xps_path, o)

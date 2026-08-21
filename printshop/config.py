@@ -11,6 +11,7 @@ class Config:
     db_path: Path = field(default_factory=lambda: Path("printshop.db"))
     sumatra_path: Path = field(default_factory=lambda: Path("tools/SumatraPDF.exe"))
     soffice_path: str = r"C:\Program Files\LibreOffice\program\soffice.exe"
+    render_dpi: int = 300
     idle_sleep_seconds: int = 180
     qr_expire_seconds: int = 240
     no_file_timeout: int = 300
