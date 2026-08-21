@@ -16,6 +16,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
+from xml.sax.saxutils import escape as saxutils_escape
 
 import pymupdf as fitz
 
@@ -71,11 +72,14 @@ _DUPLEX_MAP = {
     "duplexshort": "TwoSidedShortEdge",
 }
 
+_PAPER_MAP = {"A4": "ISOA4"}
+
 
 def parse_pages(spec: str) -> list[int] | None:
     """把页码范围（如 "1-3,5"）解析为 1 起始页码列表；空/空白返回 None（=全部页）。
 
-    支持逗号分隔的单个页码与 "a-b" 区间。结果保留书写顺序，未去重。
+    严格校验：非法 token（非数字、区间倒序 "5-2"、0/负数、悬空逗号）抛 ValueError；
+    区间与列表内重复页码去重且保持首次出现顺序（"1-3,3" -> [1,2,3]）。
     """
     spec = spec.strip()
     if not spec:
@@ -84,13 +88,29 @@ def parse_pages(spec: str) -> list[int] | None:
     for part in spec.split(","):
         part = part.strip()
         if not part:
-            continue
+            raise ValueError(f"页码范围无效: {spec!r}")
         if "-" in part:
             a, b = part.split("-", 1)
-            pages.extend(range(int(a), int(b) + 1))
+            if not a.isdigit() or not b.isdigit():
+                raise ValueError(f"页码范围无效: {part!r}")
+            start, end = int(a), int(b)
+            if start < 1 or end < start:
+                raise ValueError(f"页码范围无效: {part!r}")
+            pages.extend(range(start, end + 1))
         else:
-            pages.append(int(part))
-    return pages
+            if not part.isdigit():
+                raise ValueError(f"页码范围无效: {part!r}")
+            n = int(part)
+            if n < 1:
+                raise ValueError(f"页码范围无效: {part!r}")
+            pages.append(n)
+    seen: set[int] = set()
+    deduped: list[int] = []
+    for p in pages:
+        if p not in seen:
+            seen.add(p)
+            deduped.append(p)
+    return deduped
 
 
 def _pixmap_natural_units(pix: fitz.Pixmap) -> tuple[float, float]:
@@ -105,11 +125,15 @@ def _fit_rect(nat_w: float, nat_h: float) -> tuple[float, float, float, float]:
     return (A4_XPS_W - w) / 2, (A4_XPS_H - h) / 2, w, h
 
 
-def build_xps(pdf: Path, out: Path, dpi: int, pages: str = "") -> Path:
+def build_xps(pdf: Path, out: Path, dpi: int, pages: str = "",
+              max_pages: int = 200) -> Path:
     """把 PDF 渲染打包为 XPS 文件。
 
     原页直接 get_pixmap(dpi=dpi) 渲染（含印章/注释，不经 show_pdf_page 归一化），
     尺寸适配在 XPS 层 Viewport/Viewbox 完成。pages 形如 "1-3,5"，空串=全部页。
+
+    渲染预算：选中页数超过 max_pages 抛 ValueError（避免打爆临时盘/CPU）。
+    中间位图写入随用随删的临时目录（TemporaryDirectory 上下文保证清理）。
     """
     pdf = Path(pdf)
     out = Path(out)
@@ -119,6 +143,11 @@ def build_xps(pdf: Path, out: Path, dpi: int, pages: str = "") -> Path:
             indices = list(range(doc.page_count))
         else:
             indices = [i - 1 for i in selected if 1 <= i <= doc.page_count]
+        if not indices:
+            raise ValueError("页码范围为空，请检查页码范围设置")
+        if len(indices) > max_pages:
+            raise ValueError(
+                f"文件页数（{len(indices)}）超过打印上限 {max_pages} 页，请分批打印")
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
             page_items: list[tuple[Path, float, float]] = []
@@ -163,17 +192,29 @@ def _write_xps_package(
 
 
 def print_ticket_xml(o: PrintOptions) -> str:
-    """生成 PrintTicket XML（双面/彩色/份数/纸张，Print Schema 关键字）。"""
-    duplex = _DUPLEX_MAP.get(o.duplex, "OneSided")
+    """生成 PrintTicket XML（双面/彩色/份数/纸张，Print Schema 关键字）。
+
+    不变式：所有插值均为白名单枚举值（duplex/paper 查映射表、color 布尔映射）或
+    正整数 copies，且经 saxutils.escape 转义后写入，杜绝 XML 注入。非 A4 纸张
+    明确报错而非静默打成 A4。
+    """
+    try:
+        duplex = _DUPLEX_MAP[o.duplex]
+    except KeyError:
+        raise ValueError(f"不支持的打印面设置: {o.duplex!r}") from None
+    try:
+        paper = _PAPER_MAP[o.paper.strip().upper()]
+    except KeyError:
+        raise ValueError(f"暂不支持纸张规格: {o.paper!r}（当前仅支持 A4）") from None
     color = "Color" if o.color else "Monochrome"
-    paper = "ISOA4" if o.paper.upper() == "A4" else "ISOA4"
-    copies = max(1, o.copies)
+    copies = max(1, int(o.copies))
+    e = saxutils_escape
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <psf:PrintTicket xmlns:psf="http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" version="1" xmlns:psk="http://schemas.microsoft.com/windows/2003/08/printing/printschemakeywords">
-  <psf:ParameterInit name="psk:JobCopiesAllDocuments"><psf:Value xsi:type="xsd:integer">{copies}</psf:Value></psf:ParameterInit>
-  <psf:Feature name="psk:PageOutputColor"><psf:Option name="psk:{color}" /></psf:Feature>
-  <psf:Feature name="psk:JobDuplexAllDocumentsContiguously"><psf:Option name="psk:{duplex}" /></psf:Feature>
-  <psf:Feature name="psk:PageMediaSize"><psf:Option name="psk:{paper}" /></psf:Feature>
+  <psf:ParameterInit name="psk:JobCopiesAllDocuments"><psf:Value xsi:type="xsd:integer">{e(str(copies))}</psf:Value></psf:ParameterInit>
+  <psf:Feature name="psk:PageOutputColor"><psf:Option name="psk:{e(color)}" /></psf:Feature>
+  <psf:Feature name="psk:JobDuplexAllDocumentsContiguously"><psf:Option name="psk:{e(duplex)}" /></psf:Feature>
+  <psf:Feature name="psk:PageMediaSize"><psf:Option name="psk:{e(paper)}" /></psf:Feature>
 </psf:PrintTicket>
 """
 
@@ -209,5 +250,18 @@ def submit_xps(xps: Path, o: PrintOptions) -> tuple[bool, str]:
         return True, ""
     if r.returncode == 4:
         return False, "打印机不存在"
-    detail = (r.stderr or r.stdout or b"").decode("utf-8", "ignore").strip()
+    detail = _decode_ps_bytes(r.stderr or r.stdout or b"").strip()
     return False, detail or f"打印失败（退出码 {r.returncode}）"
+
+
+def _decode_ps_bytes(raw: bytes) -> str:
+    """解码 PowerShell 输出：UTF-8 优先，乱码时按 GBK 兜底。
+
+    ps1 侧已设置 [Console]::OutputEncoding = UTF8（见 submit_xps.ps1 顶部），
+    此处的 GBK 兜底用于旧环境/被重定向时仍能读到可读中文错误。
+    """
+    raw = raw.lstrip(b"\xef\xbb\xbf")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("gbk", errors="replace")

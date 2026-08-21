@@ -11,9 +11,6 @@ from PIL import Image
 from printshop.config import Config
 from printshop.xps_print import build_xps, submit_xps
 
-A4_WIDTH = 595.0
-A4_HEIGHT = 842.0
-
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp"}
 _OFFICE_EXTS = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp"}
 
@@ -165,9 +162,19 @@ def print_pdf(cfg: Config, pdf: Path, o: PrintOptions) -> tuple[bool, str]:
     """XPS 路径打印：渲染打包（render_dpi/pages）→ PrintTicket 提交。
 
     对外契约不变：签名与返回语义与 SumatraPDF 时代一致，routes.py 无需改动。
+
+    异常兜底：build_xps（坏 PDF、非法页码范围、超页数上限等）或 submit_xps 抛出的
+    任何异常都折叠为 (False, "打印失败: ...")，避免路由层 500 导致会话冻结。
+    XPS 产物含顾客文档全分辨率位图，用 try/finally 保证无论成败都删除（隐私红线）。
     """
     work = Path(cfg.work_dir)
     work.mkdir(parents=True, exist_ok=True)
     xps_path = work / f"{Path(pdf).stem}-{uuid4().hex[:8]}.xps"
-    build_xps(pdf, xps_path, cfg.render_dpi, o.pages)
-    return submit_xps(xps_path, o)
+    try:
+        build_xps(pdf, xps_path, cfg.render_dpi, o.pages,
+                  max_pages=cfg.max_render_pages)
+        return submit_xps(xps_path, o)
+    except Exception as exc:
+        return False, f"打印失败: {exc}"
+    finally:
+        xps_path.unlink(missing_ok=True)

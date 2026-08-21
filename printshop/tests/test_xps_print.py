@@ -1,4 +1,6 @@
 import re
+import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -46,6 +48,17 @@ def test_parse_pages():
     assert parse_pages("   ") is None
 
 
+def test_parse_pages_deduplicates():
+    assert parse_pages("1-3,3") == [1, 2, 3]
+    assert parse_pages("5,5,1") == [5, 1]
+
+
+@pytest.mark.parametrize("spec", ["abc", "1-x", "5-2", "0", "-1", "1,", ",1", ",,"])
+def test_parse_pages_invalid_raises(spec):
+    with pytest.raises(ValueError):
+        parse_pages(spec)
+
+
 def test_build_xps_valid_opc_package(tmp_path):
     pdf = make_pdf(tmp_path / "doc.pdf", pages=3)
     out = build_xps(pdf, tmp_path / "doc.xps", dpi=300)
@@ -90,6 +103,25 @@ def test_build_xps_all_pages_when_empty(tmp_path):
     assert fdoc.count("PageContent") == 5
 
 
+def test_build_xps_empty_selection_raises(tmp_path):
+    pdf = make_pdf(tmp_path / "doc.pdf", pages=3)
+    with pytest.raises(ValueError, match="页码范围为空"):
+        build_xps(pdf, tmp_path / "sel.xps", dpi=300, pages="9")
+
+
+def test_build_xps_max_pages_raises(tmp_path):
+    pdf = make_pdf(tmp_path / "doc.pdf", pages=5)
+    with pytest.raises(ValueError, match="上限"):
+        build_xps(pdf, tmp_path / "sel.xps", dpi=300, max_pages=3)
+
+
+def test_build_xps_cleans_intermediate_pngs(tmp_path):
+    pdf = make_pdf(tmp_path / "doc.pdf", pages=3)
+    out = build_xps(pdf, tmp_path / "doc.xps", dpi=300)
+    work_dir = out.parent
+    assert list(work_dir.glob("p*.png")) == []
+
+
 def test_build_xps_viewbox_natural_units(tmp_path):
     pdf = make_pdf(tmp_path / "a4.pdf")
     out = build_xps(pdf, tmp_path / "a4.xps", dpi=300)
@@ -127,6 +159,23 @@ def test_print_ticket_xml_simplex_color_default():
     xml = print_ticket_xml(o)
     assert "OneSided" in xml
     assert "Color" in xml
+
+
+def test_print_ticket_xml_duplex_short():
+    o = PrintOptions(printer="P", duplex="duplexshort")
+    xml = print_ticket_xml(o)
+    assert "TwoSidedShortEdge" in xml
+    assert "TwoSidedLongEdge" not in xml
+    assert "OneSided" not in xml
+
+
+def test_print_ticket_xml_non_a4_raises():
+    with pytest.raises(ValueError, match="A4"):
+        print_ticket_xml(PrintOptions(printer="P", paper="Letter"))
+    with pytest.raises(ValueError, match="A4"):
+        print_ticket_xml(PrintOptions(printer="P", paper=""))
+    xml = print_ticket_xml(PrintOptions(printer="P", paper="a4"))
+    assert "ISOA4" in xml
 
 
 def test_submit_xps_ok(tmp_path, monkeypatch):
@@ -177,3 +226,65 @@ def test_submit_xps_unknown_code_uses_stderr(tmp_path, monkeypatch):
     monkeypatch.setattr("printshop.xps_print.subprocess.run", lambda *a, **k: R())
     ok, err = submit_xps(xps, PrintOptions(printer="P"))
     assert not ok and "boom detail" in err
+
+
+def test_submit_xps_ps1_missing(tmp_path, monkeypatch):
+    xps = tmp_path / "a.xps"
+    xps.write_bytes(b"x")
+    monkeypatch.setattr("printshop.xps_print._PS1_NAME", "no_such.ps1")
+    ok, err = submit_xps(xps, PrintOptions(printer="P"))
+    assert not ok and "缺少提交助手脚本" in err
+
+
+def test_submit_xps_timeout_expired(tmp_path, monkeypatch):
+    xps = tmp_path / "a.xps"
+    xps.write_bytes(b"x")
+
+    def boom(*a, **k):
+        raise subprocess.TimeoutExpired(a[0], 300)
+
+    monkeypatch.setattr("printshop.xps_print.subprocess.run", boom)
+    ok, err = submit_xps(xps, PrintOptions(printer="P"))
+    assert not ok and "提交执行失败" in err
+
+
+def test_submit_xps_cleans_ticket_on_exception(tmp_path, monkeypatch):
+    xps = tmp_path / "a.xps"
+    xps.write_bytes(b"x")
+    created = {}
+
+    def fake_run(*a, **k):
+        raise subprocess.TimeoutExpired(a[0], 300)
+
+    real = tempfile.NamedTemporaryFile
+
+    class Tracker:
+        def __init__(self, *a, **k):
+            self._inner = real(*a, **k)
+            created["name"] = self._inner.name
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+        def write(self, data):
+            self._inner.write(data)
+
+        @property
+        def name(self):
+            return self._inner.name
+
+    monkeypatch.setattr("printshop.xps_print.tempfile.NamedTemporaryFile", Tracker)
+    monkeypatch.setattr("printshop.xps_print.subprocess.run", fake_run)
+    submit_xps(xps, PrintOptions(printer="P"))
+    assert "name" in created
+    assert not Path(created["name"]).exists()
+
+
+def test_submit_xps_ps1_has_utf8_output_encoding():
+    ps1 = Path(__file__).resolve().parents[1] / "submit_xps.ps1"
+    text = ps1.read_text(encoding="utf-8-sig")
+    assert "OutputEncoding" in text and "UTF8" in text

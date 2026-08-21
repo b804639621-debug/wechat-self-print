@@ -15,6 +15,16 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# 中文错误消息以 UTF-8 输出，避免 Python 侧 utf-8 解码乱码（Windows 控制台默认 CP936）。
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+try {
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $errWriter = New-Object System.IO.StreamWriter([Console]::OpenStandardError(), $utf8NoBom)
+    $errWriter.AutoFlush = $true
+    [Console]::SetError($errWriter)
+} catch { }
+
 Add-Type -AssemblyName System.Printing
 Add-Type -AssemblyName ReachFramework
 

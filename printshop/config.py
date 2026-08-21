@@ -12,6 +12,7 @@ class Config:
     sumatra_path: Path = field(default_factory=lambda: Path("tools/SumatraPDF.exe"))
     soffice_path: str = r"C:\Program Files\LibreOffice\program\soffice.exe"
     render_dpi: int = 300
+    max_render_pages: int = 200
     idle_sleep_seconds: int = 180
     qr_expire_seconds: int = 240
     no_file_timeout: int = 300

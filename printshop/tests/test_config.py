@@ -11,3 +11,8 @@ def test_config_defaults():
 def test_config_render_dpi_default():
     c = Config()
     assert c.render_dpi == 300
+
+
+def test_config_max_render_pages_default():
+    c = Config()
+    assert c.max_render_pages == 200

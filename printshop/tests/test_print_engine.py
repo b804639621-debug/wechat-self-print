@@ -143,9 +143,10 @@ def test_render_page_png(tmp_path):
 
 def test_print_pdf_success(tmp_path, monkeypatch):
     cfg = Config()
+    cfg.work_dir = tmp_path / "work"
     pdf = make_pdf(tmp_path / "p.pdf")
 
-    def fake_build(pdf, out, dpi, pages):
+    def fake_build(pdf, out, dpi, pages, max_pages=200):
         out.write_bytes(b"xps")
         return out
 
@@ -158,9 +159,14 @@ def test_print_pdf_success(tmp_path, monkeypatch):
 
 def test_print_pdf_error_code(tmp_path, monkeypatch):
     cfg = Config()
+    cfg.work_dir = tmp_path / "work"
     pdf = make_pdf(tmp_path / "p.pdf")
-    monkeypatch.setattr("printshop.print_engine.build_xps",
-                        lambda *a, **k: Path("out.xps"))
+
+    def fake_build(pdf, out, dpi, pages, max_pages=200):
+        out.write_bytes(b"xps")
+        return out
+
+    monkeypatch.setattr("printshop.print_engine.build_xps", fake_build)
     monkeypatch.setattr("printshop.print_engine.submit_xps",
                         lambda *a, **k: (False, "打印机不存在"))
     ok, err = print_pdf(cfg, pdf, PrintOptions(printer="missing"))
@@ -170,12 +176,15 @@ def test_print_pdf_error_code(tmp_path, monkeypatch):
 def test_print_pdf_passes_render_dpi_and_pages(tmp_path, monkeypatch):
     cfg = Config()
     cfg.render_dpi = 600
+    cfg.max_render_pages = 50
+    cfg.work_dir = tmp_path / "work"
     pdf = make_pdf(tmp_path / "p.pdf")
     seen = {}
 
-    def fake_build(pdf, out, dpi, pages):
+    def fake_build(pdf, out, dpi, pages, max_pages=200):
         seen["dpi"] = dpi
         seen["pages"] = pages
+        seen["max_pages"] = max_pages
         out.write_bytes(b"xps")
         return out
 
@@ -185,3 +194,96 @@ def test_print_pdf_passes_render_dpi_and_pages(tmp_path, monkeypatch):
     ok, err = print_pdf(cfg, pdf, PrintOptions(printer="P", pages="1-3,5"))
     assert ok and err == ""
     assert seen["dpi"] == 600 and seen["pages"] == "1-3,5"
+    assert seen["max_pages"] == 50
+
+
+def test_print_pdf_cleans_xps_on_success(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.work_dir = tmp_path / "work"
+    pdf = make_pdf(tmp_path / "p.pdf")
+
+    def fake_build(pdf, out, dpi, pages, max_pages=200):
+        out.write_bytes(b"xps")
+        return out
+
+    monkeypatch.setattr("printshop.print_engine.build_xps", fake_build)
+    monkeypatch.setattr("printshop.print_engine.submit_xps",
+                        lambda *a, **k: (True, ""))
+    ok, err = print_pdf(cfg, pdf, PrintOptions(printer="P"))
+    assert ok and err == ""
+    assert list(cfg.work_dir.glob("*.xps")) == []
+
+
+def test_print_pdf_cleans_xps_on_submit_failure(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.work_dir = tmp_path / "work"
+    pdf = make_pdf(tmp_path / "p.pdf")
+
+    def fake_build(pdf, out, dpi, pages, max_pages=200):
+        out.write_bytes(b"xps")
+        return out
+
+    monkeypatch.setattr("printshop.print_engine.build_xps", fake_build)
+    monkeypatch.setattr("printshop.print_engine.submit_xps",
+                        lambda *a, **k: (False, "打印机不存在"))
+    ok, err = print_pdf(cfg, pdf, PrintOptions(printer="P"))
+    assert not ok and err == "打印机不存在"
+    assert list(cfg.work_dir.glob("*.xps")) == []
+
+
+def test_print_pdf_cleans_xps_when_build_raises(tmp_path, monkeypatch):
+    cfg = Config()
+    cfg.work_dir = tmp_path / "work"
+    pdf = make_pdf(tmp_path / "p.pdf")
+
+    def fake_build(pdf, out, dpi, pages, max_pages=200):
+        out.write_bytes(b"xps")
+        raise RuntimeError("render boom")
+
+    monkeypatch.setattr("printshop.print_engine.build_xps", fake_build)
+    ok, err = print_pdf(cfg, pdf, PrintOptions(printer="P"))
+    assert not ok and "打印失败" in err and "render boom" in err
+    assert list(cfg.work_dir.glob("*.xps")) == []
+
+
+def test_print_pdf_bad_pdf_returns_false(tmp_path):
+    cfg = Config()
+    cfg.work_dir = tmp_path / "work"
+    bad = tmp_path / "bad.pdf"
+    bad.write_bytes(b"not a real pdf")
+    ok, err = print_pdf(cfg, bad, PrintOptions(printer="P"))
+    assert not ok and err.startswith("打印失败")
+
+
+@pytest.mark.parametrize("pages", ["abc", "1-x", "5-2", "0", "1-0", ",,"])
+def test_print_pdf_invalid_pages_returns_false(tmp_path, pages):
+    cfg = Config()
+    cfg.work_dir = tmp_path / "work"
+    pdf = make_pdf(tmp_path / "p.pdf")
+    ok, err = print_pdf(cfg, pdf, PrintOptions(printer="P", pages=pages))
+    assert not ok and err.startswith("打印失败")
+
+
+def test_print_pdf_empty_selection_returns_false(tmp_path):
+    cfg = Config()
+    cfg.work_dir = tmp_path / "work"
+    pdf = make_pdf(tmp_path / "p.pdf", pages=3)
+    ok, err = print_pdf(cfg, pdf, PrintOptions(printer="P", pages="9"))
+    assert not ok and err.startswith("打印失败")
+
+
+def test_print_pdf_over_max_render_pages_returns_false(tmp_path):
+    cfg = Config()
+    cfg.work_dir = tmp_path / "work"
+    cfg.max_render_pages = 3
+    pdf = make_pdf(tmp_path / "p.pdf", pages=5)
+    ok, err = print_pdf(cfg, pdf, PrintOptions(printer="P"))
+    assert not ok and err.startswith("打印失败") and "上限" in err
+
+
+def test_print_pdf_non_a4_paper_returns_false(tmp_path):
+    cfg = Config()
+    cfg.work_dir = tmp_path / "work"
+    pdf = make_pdf(tmp_path / "p.pdf")
+    ok, err = print_pdf(cfg, pdf, PrintOptions(printer="P", paper="Letter"))
+    assert not ok and err.startswith("打印失败") and "A4" in err

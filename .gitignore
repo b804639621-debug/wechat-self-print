@@ -22,3 +22,7 @@ tools/poc/*.png
 tools/poc/*.xps
 tools/poc/*.pdf
 tools/poc/*_work/
+
+
+test/
+img*.pdf
