@@ -15,6 +15,7 @@ from printshop.config import Config
 from printshop.jobs import JobStore
 from printshop.routes import AppContext, build_router
 from printshop.session_manager import SessionManager
+from printshop.tray import start_tray
 from printshop.wechat_bot import WeChatClient
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -70,6 +71,8 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
 def main() -> None:
     cfg = Config()
     app = create_app(cfg)
+    ctx = app.state.ctx
+    start_tray(base_url=f"http://127.0.0.1:{cfg.port}", get_state=lambda: ctx.sm.state)
     uvicorn.run(app, host=cfg.host, port=cfg.port)
 
 
