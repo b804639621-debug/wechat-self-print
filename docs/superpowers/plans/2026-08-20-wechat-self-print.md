@@ -6,15 +6,16 @@
 
 **Architecture:** 单进程 Python 主控（FastAPI + 微信协议客户端 + 打印引擎 + 系统托盘），ESP32-C6 AMOLED 一体板轮询 `/api/screen/state` 显示二维码；管理员浏览器打开 `/admin` 操作。微信协议代码 vendor 自开源项目 wx-filehelper-api（MIT License）。
 
-**Tech Stack:** Python 3.11+ / FastAPI / httpx / SQLite / PyMuPDF / Pillow / pywin32 / OpenCV / pystray / SumatraPDF / LibreOffice；固件：Arduino (ESP32-C6) / WiFiManager / ricmoo-QRCode / ArduinoJson
+**Tech Stack:** Python 3.11+ / FastAPI / httpx / SQLite / PyMuPDF / Pillow / pywin32 / OpenCV / pystray / **XPS+PrintTicket（.NET 互操作：pythonnet 优先，PowerShell 助手兜底）** / SumatraPDF（降级为备用/调试）/ Office COM 优先 + LibreOffice 兜底；固件：Arduino (ESP32-C6) / WiFiManager / ricmoo-QRCode / ArduinoJson / XPowersLib
 
 **Spec:** `docs/superpowers/specs/2026-08-20-wechat-self-print-design.md`（执行时先读此文档）
 
 ## Global Constraints
 
 - 平台：管理员电脑 Windows 10/11 x64；Python ≥ 3.11；所有路径相对项目根 `E:\kaifa\自助打印`
-- 依赖固定：fastapi, uvicorn[standard], httpx, pydantic, pillow, pymupdf, pywin32, opencv-python-headless, pystray, pytest, pytest-asyncio, httpx（测试用 ASGITransport）
-- SumatraPDF 便携版放 `tools/SumatraPDF.exe`；LibreOffice 可选安装（缺失时 Office 文件标红提示，不崩溃）
+- 依赖固定：fastapi, uvicorn[standard], httpx, pydantic, pillow, pymupdf, pywin32, opencv-python-headless, pystray, pytest, pytest-asyncio；Task 7B 起增加 pythonnet（⚠️ Python 3.14 兼容性未验证，失败则走 PowerShell 助手方案）
+- **打印路径定案（m1-verification §7-9 实测定案，最高优先级约束）**：normalize → PyMuPDF 原页渲染（render_dpi 默认 300）→ XPS 打包 → `XpsDocumentWriter.Write` + PrintTicket。三条铁律：①**勿用 PyMuPDF `show_pdf_page` 做页面归一化**（丢印章，PoC 实测）②XPS `ImageBrush Viewbox` 填位图自然尺寸（像素×96/dpi）③**禁用 `PrintQueue.AddJob`**（柯美 PCL 队列挂起，统一用 XpsWriter）
+- SumatraPDF 便携版放 `tools/SumatraPDF.exe`（降级为备用/调试，单面场景可用）；Office 转换双轨制：本机 Office COM（ExportAsFixedFormat，已实测）优先，无 Office 用 LibreOffice，均不可用则 Office 文件标红提示不崩溃
 - 微信协议代码 vendor 自 `https://github.com/CJackHwang/wx-filehelper-api`（MIT），复制 `direct_bot.py` 到 `printshop/vendor/direct_bot.py`，文件头保留出处与 LICENSE 说明
 - **隐私红线**：`finish_service()` 必须 登出微信会话 + 删除 inbox 顾客文件 + 归档任务记录，缺一不可
 - 单队列：同一时刻仅服务一位顾客（协议硬约束）
@@ -33,7 +34,8 @@ E:\kaifa\自助打印\
 │   ├── vendor/direct_bot.py    # 微信协议实现（vendor，勿改逻辑）
 │   ├── session_manager.py      # 会话状态机 + 亮屏/息屏状态机
 │   ├── jobs.py                 # print_jobs/print_history SQLite 数据层
-│   ├── print_engine.py         # 枚举打印机/格式归一化/预览渲染/SumatraPDF 执行
+│   ├── print_engine.py         # 格式分类/归一化(双轨)/预览渲染（Task 7B 起打印执行移交 xps_print.py）
+│   ├── xps_print.py            # XPS 打包 + PrintTicket 提交（Task 7B 新建，以 tools/poc/file_to_xps.py 为起点）
 │   ├── routes.py               # REST + WebSocket 路由
 │   ├── tray.py                 # pystray 系统托盘
 │   ├── static/admin.html       # 管理界面（单文件，原生 JS）
@@ -42,7 +44,8 @@ E:\kaifa\自助打印\
 ├── firmware/print_screen/        # ESP32-C6 固件
 │   │   ├── print_screen.ino      # 主程序（配网/轮询/二维码/触摸唤醒）
 │   │   └── lcd_touch.cpp/.h, user_config.h  # 微雪例程 09_LVGL_V9_Test 复制（CO5300+CST9220+引脚）
-├── tools/SumatraPDF.exe        # 便携版打印器
+├── tools/SumatraPDF.exe        # 便携版打印器（备用/调试）
+├── tools/poc/                  # M1 PoC 沉淀：file_to_xps.py / make_xps.py（Task 7B 起点，届时入库）
 ├── assets/signage.html         # 柜台立牌（打印成 A5）
 └── inbox/                      # 顾客文件收件目录（运行时生成，gitignore）
 ```
@@ -371,6 +374,8 @@ def test_add_list_archive(tmp_path: Path):
 
 ### Task 4: 打印引擎 `print_engine.py`
 
+> ⚠️ **状态注记（2026-08-21 修订）**：本任务已按原方案完成实施（SumatraPDF 打印路径 + show_pdf_page A4 归一化）。随后 Task 0 扩展排查实测定案：**SumatraPDF 静默打印的 duplex/paper 被 Epson 驱动丢弃、`show_pdf_page` 归一化丢印章**（m1-verification §7-9）。打印执行与页面归一化由 **Task 7B** 返工替换；本任务保留有效的部分：`PrintOptions`/`list_printers`/`classify_file`/`get_page_count`/`render_page_png`/格式转换骨架。以下原文留作历史记录。
+
 **Files:**
 - Create: `printshop/print_engine.py`
 - Test: `printshop/tests/test_print_engine.py`
@@ -594,6 +599,44 @@ def test_screen_state_contract():
 
 ---
 
+### Task 7B: 打印引擎 XPS 化改造（返工，替代 Task 4 的 SumatraPDF 打印路径）
+
+> 依据 m1-verification §7-9 实测定案。**对外契约不变**（`PrintOptions` 字段、`print_pdf(cfg, pdf, o) -> tuple[bool, str]` 签名、routes.py 无需改动），仅替换内部实现。
+
+**Files:**
+- Create: `printshop/xps_print.py`（XPS 打包 + PrintTicket 提交；以 `tools/poc/file_to_xps.py`、`tools/poc/make_xps.py` 为起点，勿重造）
+- Modify: `printshop/print_engine.py`（删 `normalize_page_size_to_a4`/`build_print_cmd`/SumatraPDF 打印路径；`print_pdf` 改走 xps_print；`normalize_to_pdf` Office 双轨制）
+- Modify: `printshop/config.py`（增加 `render_dpi: int = 300` + 测试断言）
+- Modify: `printshop/requirements.txt`（+pythonnet，若选型成立）
+- Modify: `printshop/tests/test_print_engine.py`（删/换 SumatraPDF 用例）
+- Test: `printshop/tests/test_xps_print.py`
+
+**Interfaces:**
+- Consumes: `Config`（新增 render_dpi）、`PrintOptions`、PoC 代码 `tools/poc/`
+- Produces：
+  - `xps_print.build_xps(pdf: Path, out: Path, dpi: int, pages: str = "") -> Path`（渲染+打包；pages 如 "1-3,5" 在渲染层选取）
+  - `xps_print.submit_xps(xps: Path, o: PrintOptions) -> tuple[bool, str]`（XpsWriter.Write + PrintTicket）
+  - `print_engine.print_pdf(cfg, pdf, o)` 内部 = build_xps → submit_xps
+  - PrintTicket 映射：duplex simplex→OneSided / duplexlong→TwoSidedLongEdge / duplexshort→TwoSidedShortEdge；color True→Color / False→Monochrome；copies→PrintTicket 份数；paper A4
+
+**硬约束（全部实测定案，违反即实机故障）：**
+1. **勿用 PyMuPDF `show_pdf_page` 做页面归一化**——丢印章（透明组内容流不随 Form XObject 迁移）。原页直接 `get_pixmap(dpi=render_dpi)` 渲染，尺寸适配在 XPS 层做（Viewport/Viewbox）
+2. **XPS `ImageBrush Viewbox` 填位图自然尺寸**（像素×96/dpi，单位 1/96 英寸），填像素值会按比例缩小（PoC v1 缩到 64% 的成因）
+3. **统一 `PrintQueue.CreateXpsDocumentWriter().Write(fixedDocSeq, ticket)` 提交**——`AddJob` 在柯美 PCL 队列挂起且任务不创建（两次复现）；Epson 上 XpsWriter 需本任务补测
+4. 灰度请求在柯美被驱动调和为 Monochrome（ConflictResolved）属正常，不算失败
+5. 图片打印默认 contain-fit（等比、居中、不裁切、白底、去透明通道）
+6. Office 转换双轨制：Office COM（ExportAsFixedFormat，本机 Office16 已实测）优先 → soffice 兜底 → 均不可用抛 FileNotFoundError（界面标红）
+7. .NET 互操作选型：优先 **pythonnet**（pip 走镜像）；⚠️ Python 3.14 兼容性未验证——若无 wheel 或加载失败，降级为 **PowerShell 助手脚本**（生成 XPS 后 subprocess 调 ps1 提交）。选型过程与结论记入报告
+8. 测试约定：XPS 打包结构可自动化验证（产物是合法 ZIP/OPC、含 FixedDocumentSequence、页数正确、PrintTicket XML 含指定双面/彩色/份数）；提交层 mock；双机实机为人工 checklist
+
+- [ ] **Step 1: 失败测试** `test_xps_print.py`（打包结构/页数/DPI/PrintTicket 参数映射）+ 更新 test_print_engine（删 build_cmd 用例，改 print_pdf 为 mock xps_print 路径）
+- [ ] **Step 2: 实现 xps_print.py**（以 PoC 为起点）→ 测试 GREEN
+- [ ] **Step 3: print_engine 改造**（删 show_pdf_page 归一化与 SumatraPDF 路径；normalize 双轨制；print_pdf 接 XPS）→ 全量测试 GREEN
+- [ ] **Step 4: 人工集成验证 checklist**：Epson XpsWriter 双面彩色（坑 3 补验）✓ 柯美 XpsWriter 双面黑白 ✓ 图片 contain ✓ Word COM 转换打印 ✓ 调查令类含印章 PDF 印章保真 ✓
+- [ ] **Step 5: tools/poc/file_to_xps.py 与 make_xps.py 入库**（PoC 产物 png/xps 不入库，gitignore 排除）→ Commit `feat: 打印引擎 XPS 化（PrintTicket 路径，替代 SumatraPDF）`
+
+---
+
 ### Task 8: 系统托盘 `tray.py`
 
 **Files:**
@@ -640,8 +683,8 @@ main.py 中实例化并 `run_thread()`；后台任务定期按 SessionManager.st
 
 **Files:** Modify: 联调中发现的缺陷修复
 
-- [ ] **Step 0: 部署前置检查**：店内路由器**关闭 AP 隔离**（否则小屏/手机访问不到主控，最高发坑）；安装 LibreOffice（Task 4 遗留：office 转换此前仅 mock 测试，本任务需实测 docx→PDF→打印）；若 Task 10 已完成，小屏与调试页 `/screen` 同屏对照
-- [ ] **Step 1: 按 spec §3.1 主流程走查**：点托盘 → 小屏/调试页出码 → 手机扫码 → 确认登录 → 发 3 个文件（PDF+图片+docx）+ 1 条文字 → 管理端弹窗/备注横幅 → 预览 → 灰度双面打印到实机 → 完成服务 → 确认 inbox 清空、会话登出、任务归档
+- [ ] **Step 0: 部署前置检查**：**Task 7B 必须已完成**（打印主路径为 XPS+PrintTicket）；店内路由器**关闭 AP 隔离**（否则小屏/手机访问不到主控，最高发坑）；Office 转换主路径为本机 Office COM（Office16 已实测），LibreOffice 可选安装作兜底；若 Task 10 已完成，小屏与调试页 `/screen` 同屏对照
+- [ ] **Step 1: 按 spec §3.1 主流程走查**：点托盘 → 小屏/调试页出码 → 手机扫码 → 确认登录 → 发 3 个文件（PDF+图片+docx）+ 1 条文字 → 管理端弹窗/备注横幅 → 预览 → **双机打印验证（Epson 彩色双面 + 柯美黑白双面，均走 XpsWriter）** → 完成服务 → 确认 inbox 清空、会话登出、任务归档
 - [ ] **Step 2: 按 spec §3.2 异常表逐项注入**：断网/掉线恢复、扫码不确认超时、5 分钟无文件提醒、打印失败重打、zip 标红
 - [ ] **Step 3: 缺陷修复并补回归测试** → **Step 4: Commit** `fix: 端到端联调问题修复`
 
@@ -753,9 +796,9 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 **Files:**
 - Create: `printshop.spec`（PyInstaller）、`scripts/install_autostart.ps1`、`README.md`（部署说明）
 
-- [ ] **Step 1: PyInstaller 打包**：`pyinstaller printshop.spec`（onefile，含 static/、tools/SumatraPDF.exe 数据文件），产出 `dist/printshop.exe`
+- [ ] **Step 1: PyInstaller 打包**：`pyinstaller printshop.spec`（onefile，含 static/、tools/SumatraPDF.exe 数据文件），产出 `dist/printshop.exe`。⚠️ **Task 7B 选型联动**：若用 pythonnet，spec 需处理 .NET 运行时依赖（pythonnet 打包有已知坑，需实测；目标机需 .NET Runtime）；若用 PowerShell 助手方案，把助手 ps1 作为数据文件打入并在代码中解析其解压路径
 - [ ] **Step 2: 开机自启**：`install_autostart.ps1` 写注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 或启动文件夹快捷方式
-- [ ] **Step 3: 干净环境验证**：在无 Python 的 Windows 机器上跑 exe，主流程走查一遍
+- [ ] **Step 3: 干净环境验证**：在无 Python 的 Windows 机器上跑 exe，主流程走查一遍（**含双机实机打印一次**——.NET 互操作在干净环境的可用性是本步骤重点）
 - [ ] **Step 4: Commit** `build: 打包与开机自启`
 
 ---
@@ -772,10 +815,12 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 
 ## Self-Review 结论
 
-- **Spec 覆盖**：§2 基线 1-7 → 无收费模块（符合）；打开文件编辑（Task 6 open/open_dir）；格式全收+标红（Task 4 classify/normalize + Task 7 标红）；多打印机+彩色灰度（Task 4/7）；单队列（Task 5）；隐私红线（Task 5 finish_service + Task 9 验证）；小屏硬件+烧屏 4 条+立牌（Task 10/13）；托盘唤醒+强制换码（Task 5 wake + Task 8）。§3 流程与异常（Task 5/9/11）。§6.1/6.2 界面（Task 6/7/10）。§7 打印引擎（Task 4）。§9 数据模型（Task 3）。§10 测试策略（各任务 TDD + Task 0/9 人工）。§12 里程碑 M1-M4 → Task 0 / 1-10 / 7+9 / 11-13。
-- **类型一致性**：`SessionState` 常量、`screen_state()` 字段名、`PrintOptions` 字段、`JobStore` 方法名在 Task 2-10 间一致；`WeChatClient` 接口以 vendor 实际代码为准的调整规则已在 Task 2 注明。
-- **已知风险点**（执行时关注）：vendor `direct_bot.py` 的方法签名与本计划假设可能有出入（Task 2 Step 1 先核对）；`qr_content` 拼接格式以 Task 0 Step 4 实测为准（M1 已确认 `https://login.weixin.qq.com/l/{uuid}`）；固件最高发坑=**AXP2101 PMU 未初始化导致屏不亮**与**路由器 AP 隔离**（Task 10 Step 1/3 已标注）。
+- **Spec 覆盖**：§2 基线 1-7 → 无收费模块（符合）；打开文件编辑（Task 6 open/open_dir）；格式全收+标红（Task 4 classify/normalize + Task 7B 双轨转换 + Task 7 标红）；多打印机+彩色灰度（Task 7B XPS/PrintTicket + Task 7）；单队列（Task 5）；隐私红线（Task 5 finish_service + Task 9 验证）；小屏硬件+烧屏 4 条+立牌（Task 10/13）；托盘唤醒+强制换码（Task 5 wake + Task 8）。§3 流程与异常（Task 5/9/11）。§6.1/6.2 界面（Task 6/7/10）。§7 打印引擎（Task 4 骨架 + **Task 7B XPS 化返工**）。§9 数据模型（Task 3）。§10 测试策略（各任务 TDD + Task 0/7B/9 人工）。§12 里程碑 M1-M4 → Task 0 / 1-7 / 7B+8-10 / 11-13。
+- **类型一致性**：`SessionState` 常量、`screen_state()` 字段名、`PrintOptions` 字段（Task 7B 保持不变）、`JobStore` 方法名在 Task 2-10 间一致；`print_pdf(cfg, pdf, o) -> tuple[bool, str]` 签名 Task 7B 前后一致（routes.py 无感）；`WeChatClient` 接口以 vendor 实际代码为准的调整规则已在 Task 2 注明。
+- **执行顺序（2026-08-21 重编排）**：~~Task 0~~（已完成）→ Task 1-7（已完成）→ **Task 7B（打印引擎 XPS 化，Task 9 的前置）** → Task 8 → Task 9 → Task 10（可与 8/9 并行，只依赖 Task 6 契约）→ Task 11 → Task 12 → Task 13。已完成任务的编号与 brief/report/ledger 记录保持不变。
+- **已知风险点**（执行时关注）：vendor `direct_bot.py` 的方法签名与本计划假设可能有出入（Task 2 Step 1 先核对）；`qr_content` 拼接格式以 Task 0 Step 4 实测为准（M1 已确认 `https://login.weixin.qq.com/l/{uuid}`）；固件最高发坑=**AXP2101 PMU 未初始化导致屏不亮**与**路由器 AP 隔离**（Task 10 Step 1/3 已标注）；打印三铁律（勿 show_pdf_page / Viewbox 自然尺寸 / 禁用 AddJob 用 XpsWriter，Global Constraints）；pythonnet 对 Python 3.14 兼容性未验证（Task 7B 选型决策点）。
 
 ## 修订记录
 
-- 2026-08-21：依据 esp32-c6-touch-amoled-2-16 开发板专项会话（`esp32-c6-touch-amoled-2-16.json`，含微雪 Gitee 例程仓结构核实）修订 **Task 10**：环境搭建具体化（esp32 core 3.3.x / USB CDC On Boot / XPowersLib 必装 / 驱动文件来源 09_LVGL_V9_Test 的 lcd_touch.cpp/.h+user_config.h）；初始化顺序 AXP2101→CO5300→CST9220；二维码 scale 6→9~10、反色改白底黑码；触摸唤醒改轮询；补烧录与配网步骤（BOOT 键、AP 隔离）；checklist 加 /screen 同屏对照；注明可与 Task 7/8/9 并行。联动：**文件结构段**补固件驱动文件；**Task 9** 加 Step 0 部署前置检查（AP 隔离、装 LibreOffice、同屏对照）。
+- 2026-08-21（之一）：依据 esp32-c6-touch-amoled-2-16 开发板专项会话（`esp32-c6-touch-amoled-2-16.json`，含微雪 Gitee 例程仓结构核实）修订 **Task 10**：环境搭建具体化（esp32 core 3.3.x / USB CDC On Boot / XPowersLib 必装 / 驱动文件来源 09_LVGL_V9_Test 的 lcd_touch.cpp/.h+user_config.h）；初始化顺序 AXP2101→CO5300→CST9220；二维码 scale 6→9~10、反色改白底黑码；触摸唤醒改轮询；补烧录与配网步骤（BOOT 键、AP 隔离）；checklist 加 /screen 同屏对照；注明可与 Task 7/8/9 并行。联动：**文件结构段**补固件驱动文件；**Task 9** 加 Step 0 部署前置检查。
+- 2026-08-21（之二）：依据 Task 0 执行会话（`task-0.json`，147 条消息）的扩展排查定案（m1-verification §7 v2/§8/§9）修订**打印方案**：SumatraPDF 主路径废弃 → **PyMuPDF 原页渲染 → XPS 打包 → XpsDocumentWriter.Write + PrintTicket**（三铁律：勿 show_pdf_page / Viewbox 自然尺寸 / 禁用 AddJob）。**新增 Task 7B**（打印引擎 XPS 化返工，含 Config.render_dpi、Office COM/LibreOffice 双轨、图片 contain-fit、pythonnet 选型决策点、双机人工验证）；Task 4 加废弃注记（对外契约不变）；联动修订 Tech Stack / Global Constraints / 文件结构 / Task 9（前置依赖 7B + 双机回归）/ Task 12（pythonnet 打包注记）/ Self-Review 执行顺序。Task 10 不受打印方案影响，上一修订保持有效。
