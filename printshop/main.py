@@ -1,9 +1,13 @@
 """服务入口：create_app 工厂组装 Config/JobStore/WeChatClient/SessionManager。
 
 启动方式：`python -m printshop.main` 或 `python printshop/main.py`。
+PyInstaller 冻结态：chdir 到 exe 同级目录，使 Config 的相对路径（inbox/work/db）
+落在 exe 旁而非 _MEI 临时目录（见 printshop.spec）。
 """
 import asyncio
 import contextlib
+import os
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -18,7 +22,9 @@ from printshop.session_manager import SessionManager
 from printshop.tray import start_tray
 from printshop.wechat_bot import WeChatClient
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+STATIC_DIR = (Path(sys._MEIPASS) / "printshop" / "static"
+              if getattr(sys, "frozen", False)
+              else Path(__file__).resolve().parent / "static")
 
 
 @contextlib.asynccontextmanager
@@ -69,6 +75,8 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
 
 
 def main() -> None:
+    if getattr(sys, "frozen", False):
+        os.chdir(Path(sys.executable).resolve().parent)
     cfg = Config()
     app = create_app(cfg)
     ctx = app.state.ctx
