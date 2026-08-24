@@ -50,6 +50,8 @@ LcdTouchPanel* touch_dev = NULL;
 
 String curState = "";          /* 主控下发的状态（IDLE/SCANNED/...） */
 String qrShown = "";           /* 最近一次绘制的二维码内容 */
+String maintLastText = "";     /* 维护画面守卫：上次绘制的文案（pollScreen 成功路径复位） */
+int8_t maintLastJitter = 6;    /* 维护画面守卫：上次实际绘制的偏移 */
 String lastStatusKey = "";     /* 最近一次绘制的服务状态画面（状态+文件数） */
 bool screenOn = false;         /* 屏当前是否点亮 */
 bool everConnected = false;    /* 是否曾成功拉到主控状态 */
@@ -144,6 +146,7 @@ void pollScreen(void) {
 
   failCount = 0;
   everConnected = true;
+  maintLastText = "";   /* 主控可达即复位维护画面守卫：再宕机时 showMaintenance 必重绘，不留正常画面残影 */
 
   if (String(state) != curState) {          /* 状态变化才重置熄屏计时 */
     curState = state;
@@ -262,8 +265,6 @@ void showTextOnBlack(const char* s) {
 }
 
 void showMaintenance(const char* s) {
-  static String lastText = "";
-  static int8_t lastJitter = 6;   /* 上次实际绘制的偏移 */
   static int8_t jitter = 6;
   static unsigned long lastFlip = 0;
 
@@ -272,9 +273,9 @@ void showMaintenance(const char* s) {
     lastFlip = now;
     jitter = (int8_t)(-jitter);            /* ±6px 交替（初值 6，避免 0 恒 0） */
   }
-  if (String(s) == lastText && jitter == lastJitter) return;  /* 文案/位置未变 → 不重绘 */
-  lastText = s;
-  lastJitter = jitter;
+  if (String(s) == maintLastText && jitter == maintLastJitter) return;  /* 文案/位置未变 → 不重绘 */
+  maintLastText = s;
+  maintLastJitter = jitter;
   lcd_clear(LCD_COLOR_BLACK);
   lcd_draw_text_center(TEXT_Y + jitter, s, LCD_COLOR_WHITE, LCD_COLOR_BLACK);
 }
