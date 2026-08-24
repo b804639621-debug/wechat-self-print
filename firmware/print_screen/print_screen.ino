@@ -11,8 +11,9 @@
  *   - 状态机：IDLE 显示二维码 / SCANNED 二维码变暗 / 服务中状态画面 / 打印中
  *   - 烧屏防护 4 条：亮度 80%、无操作熄屏、二维码随机偏移、定时微移刷新
  *   - 触摸轮询唤醒 → POST /api/screen/wake
- * 依赖库（Arduino 库管理器）：WiFiManager、ArduinoJson(v7)、QRCode(ricmoo)、
+ * 依赖库（Arduino 库管理器）：WiFiManager、ArduinoJson(v7)、
  *   XPowersLib（从微雪例程仓 01_Arduino_Libraries 拷入）。
+ *   ricmoo/QRCode 已 vendored 到 src/ricmoo_qrcode/（esp32 core 3.3.x 内置同名头文件会抢占）。
  * ============================================================================
  */
 
@@ -21,7 +22,7 @@
 #include <HTTPClient.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
-#include "qrcode.h"                          /* ricmoo/QRCode */
+#include "./src/ricmoo_qrcode/qrcode.h"     /* ricmoo/QRCode（vendored 副本：esp32 core 3.3.x 内置同名 qrcode.h 会抢占） */
 #include "user_config.h"
 #include "lcd_touch.h"
 #include "display.h"
@@ -29,7 +30,7 @@
 #include "./src/port_bsp/axp2101_bsp.h"
 
 /* ============================ 可配置参数 ============================ */
-#define SERVER_IP        "192.168.1.100"     /* 主控固定 IP（配网时按店内实际改） */
+#define SERVER_IP        "192.168.31.171"    /* 主控固定 IP（配网时按店内实际改） */
 #define SERVER_PORT      8000
 #define POLL_INTERVAL_MS 1500                /* 正常轮询间隔 */
 #define POLL_BACKOFF_MS  5000                /* 主控不可达退避重试间隔 */
@@ -114,8 +115,11 @@ void loop(void) {
   }
 
   /* 烧屏防护#3 本地兜底：IDLE 且长时间无变化 → 熄屏（正常由主控 display=off 驱动）。
-   * 主控不可达（failCount>0）时让“系统维护中”常亮提示，不进入此分支。 */
-  if (failCount == 0 && curState == "IDLE" && screenOn && (now - lastStateChange >= IDLE_SLEEP_MS)) {
+   * 主控不可达（failCount>0）时让"系统维护中"常亮提示，不进入此分支。
+   * 注意：必须用新鲜 millis()，不能用循环顶部的 now——pollScreen() 内 HTTP 耗时
+   * 数百 ms，若期间刚亮屏更新了 lastStateChange，用旧 now 相减会无符号下溢成 ~2^32，
+   * 导致每次轮询都误触发熄屏（on/off 每 1.5s 循环闪烁的根因）。 */
+  if (failCount == 0 && curState == "IDLE" && screenOn && (millis() - lastStateChange >= IDLE_SLEEP_MS)) {
     doScreenOff();
   }
   delay(30);

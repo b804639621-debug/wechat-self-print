@@ -702,7 +702,7 @@ main.py 中实例化并 `run_thread()`；后台任务定期按 SessionManager.st
 
 **并行性**：本任务只依赖 Task 6 的接口契约，不等 Task 9——可用 Python stub 返回固定 JSON 先行开发固件，与 Task 7/8/9 并行。
 
-- [ ] **Step 1: 环境搭建（版本与仓库结构已核实，照做）**
+- [x] **Step 1: 环境搭建（版本与仓库结构已核实，照做）** ✅ 2026-08-24（实际走 arduino-cli 命令行路线，见 firmware/README §二）
 
 1. Arduino IDE 2.x；开发板管理器 URL 加 `https://espressif.github.io/arduino-esp32/package_esp32_index.json`，安装 **esp32 core 3.3.x**（与例程同代，C6 必须 3.x）
 2. 板型选 **ESP32C6 Dev Module**；Tools 菜单对照例程仓根目录的 `Tools Configuration.png` 截图：Flash Size 16MB，**USB CDC On Boot = Enabled**（C6 原生 USB 直连，不开则串口监视器无日志）
@@ -712,7 +712,7 @@ main.py 中实例化并 `run_thread()`；后台任务定期按 SessionManager.st
    - 从 `02_Example/Arduino-v3.3.3/09_LVGL_V9_Test/` 复制 `lcd_touch.cpp/.h` + `user_config.h` 到本 sketch；**LVGL 本身不装**（本项目 UI 极简，直绘即可）
 5. 先跑通两个官方例程验硬件：`01_AXP2101_Test` → `09_LVGL_V9_Test`（屏亮、触摸有反应 = 硬件与驱动 OK）
 
-- [ ] **Step 2: 实现**，结构（已按板子实况修订）：
+- [x] **Step 2: 实现**，结构（已按板子实况修订）：✅ 2026-08-24（+2026-08-24 实机修复两枚：loop 息屏兜底无符号下溢致闪烁；mono 逐行推送打挂 QSPI→条带化+DMA 同步，详见 firmware/README §八）
 
 ```cpp
 // 依赖：WiFiManager, ArduinoJson(v6 写法), qrcode(ricmoo), XPowersLib(AXP2101)
@@ -766,7 +766,7 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 
 - `SERVER_IP` 写死主控固定 IP 即可满足 MVP；可选增强：WiFiManager 自定义参数把主控 IP 做成配网时可填（**不做进首版**）
 
-- [ ] **Step 3: 烧录与配网**
+- [x] **Step 3: 烧录与配网** ✅ 2026-08-24（COM3 烧录、PRINT-SETUP 配网、入店网 192.168.31.84、轮询主控链路均验证）
 
 1. USB-C 直连电脑，**C6 原生 USB 无需串口驱动**，选对应 COM 口直接上传
 2. 上传失败/认不出端口 → **按住板子侧边 BOOT 键再重新上电**进下载模式，然后正常上传
@@ -775,6 +775,7 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 5. ⚠️ **店内路由器必须关闭 AP 隔离**，否则小屏永远访问不到主控（现场最高发坑，列入部署前置检查）
 
 - [ ] **Step 4: 人工验证 checklist**：首次配网 ✓ 息屏/点亮切换 ≤2s ✓ 二维码微信可扫（iOS+安卓各一，顺带确认白底黑码极性决定）✓ 状态文案切换 ✓ 触摸唤醒 ✓ 连续 2 小时待机无异常 ✓ **与浏览器调试页 /screen 同屏对照（固件显示与主控状态一致）** ✓
+  - 进度（2026-08-24）：首次配网 ✓、触摸唤醒 ✓、息屏/点亮 ✓、二维码稳定显示且微信可扫 ✓（单端）；**待现场**：状态文案切换（真扫码登录流程）、双屏对照、iOS+安卓双端、2h 待机。
 - [ ] **Step 5: Commit** `feat: ESP32 小屏固件`
 
 ---

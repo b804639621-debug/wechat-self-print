@@ -8,6 +8,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <driver/spi_master.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -20,6 +21,22 @@
 static esp_lcd_panel_handle_t  panel = NULL;      /* 面板句柄 */
 static esp_lcd_panel_io_handle_t io_handle = NULL; /* 命令/参数通道（背光走这里） */
 static uint16_t* rowbuf = NULL;                    /* DMA 行缓冲 */
+static SemaphoreHandle_t s_color_done = NULL;      /* 像素 DMA 完成信号 */
+
+/* esp_lcd 的 tx_color 是异步事务：返回≠传输完成。rowbuf 是全行复用的，
+ * 不等待就改写 = DMA 与 CPU 数据竞争；队列满时的丢弃/乱序也无法排除
+ * （实机症状：1 行 × 几百次密集推送全部丢失或挤成一条细黑条，
+ *  而 fill_rect 的 32 行大块推送一直正常）。统一等完成再复用缓冲。 */
+static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
+                                          esp_lcd_panel_io_event_data_t* edata, void* user_ctx) {
+  BaseType_t hp_task_woken = pdFALSE;
+  if (s_color_done) xSemaphoreGiveFromISR(s_color_done, &hp_task_woken);
+  return hp_task_woken == pdTRUE;
+}
+
+static void lcd_wait_dma(void) {
+  if (s_color_done) xSemaphoreTake(s_color_done, pdMS_TO_TICKS(200));  /* 超时兜底防死等 */
+}
 
 /* 绘图行缓冲：480 x 32 行，文本/填充/点阵共用 */
 #define STRIP_H 32
@@ -71,6 +88,7 @@ void lcd_init(I2cMasterBus& i2cbus) {
   io_config.lcd_cmd_bits = 32;
   io_config.lcd_param_bits = 8;
   io_config.flags.quad_mode = true;
+  io_config.on_color_trans_done = on_color_trans_done;   /* DMA 完成回调（lcd_wait_dma 用） */
   ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BSP_LCD_SPI_NUM, &io_config, &io_handle));
 
   sh8601_vendor_config_t vendor_config = {};
@@ -95,6 +113,8 @@ void lcd_init(I2cMasterBus& i2cbus) {
 
   rowbuf = (uint16_t*)heap_caps_malloc(BSP_LCD_H_RES * STRIP_H * sizeof(uint16_t), MALLOC_CAP_DMA);
   assert(rowbuf && "rowbuf DMA alloc failed");
+  s_color_done = xSemaphoreCreateBinary();
+  assert(s_color_done && "dma sem alloc failed");
 
   /* 烧屏防护#2：亮度上限 80% */
   lcd_set_backlight(LCD_BACKLIGHT_PCT);
@@ -124,6 +144,7 @@ void lcd_fill_rect(int x0, int y0, int x1, int y1, uint16_t color) {
     int n = width * h;
     for (int i = 0; i < n; i++) rowbuf[i] = lcd_px(color);
     esp_lcd_panel_draw_bitmap(panel, x0, y, x1 + 1, y + h, rowbuf);
+    lcd_wait_dma();
     y += h;
   }
 }
@@ -136,20 +157,33 @@ void lcd_draw_mono_scaled(int ox, int oy, int w, int h, int scale,
                           const uint8_t* mono, uint16_t fg, uint16_t bg) {
   int dst_w = w * scale;
   if (ox + dst_w > LCD_W) dst_w = LCD_W - ox;
-  if (dst_w <= 0 || ox >= LCD_W) return;
+  if (dst_w <= 0 || ox >= LCD_W || ox < 0) return;
   int row_stride = (w + 7) / 8;
-  for (int r = 0; r < h * scale; r++) {
-    int yy = oy + r;
-    if (yy >= LCD_H) break;
-    if (yy < 0) continue;
-    int mr = r / scale;
-    const uint8_t* rowb = mono + (size_t)mr * row_stride;
-    for (int c = 0; c < dst_w; c++) {
-      int mc = c / scale;
-      uint8_t bit = (rowb[mc >> 3] >> (mc & 7)) & 1;
-      rowbuf[c] = lcd_px(bit ? fg : bg);
+  int total = h * scale;
+  /* 按 STRIP_H 行条带渲染推送（与 fill_rect 同款的大块 DMA 节奏，
+   * 避免 1 行 × 几百次密集小事务把 esp_lcd QSPI 推送打挂） */
+  for (int y0 = 0; y0 < total; y0 += STRIP_H) {
+    int rows = STRIP_H;
+    if (y0 + rows > total) rows = total - y0;
+    int yy = oy + y0;
+    int skip = 0;
+    if (yy < 0) skip = -yy;                    /* 上沿裁剪 */
+    if (skip >= rows) continue;
+    int out = rows - skip;
+    int yscr = yy + skip;
+    if (yscr >= LCD_H) break;                  /* 已过屏底 */
+    if (yscr + out > LCD_H) out = LCD_H - yscr;
+    for (int r = 0; r < out; r++) {
+      int mr = (y0 + skip + r) / scale;
+      const uint8_t* rowb = mono + (size_t)mr * row_stride;
+      for (int c = 0; c < dst_w; c++) {
+        int mc = c / scale;
+        uint8_t bit = (rowb[mc >> 3] >> (mc & 7)) & 1;
+        rowbuf[(size_t)r * dst_w + c] = lcd_px(bit ? fg : bg);
+      }
     }
-    esp_lcd_panel_draw_bitmap(panel, ox, yy, ox + dst_w, yy + 1, rowbuf);
+    esp_lcd_panel_draw_bitmap(panel, ox, yscr, ox + dst_w, yscr + out, rowbuf);
+    lcd_wait_dma();
   }
 }
 
@@ -201,6 +235,7 @@ void lcd_draw_text(int x, int y, const char* s, uint16_t fg, uint16_t bg) {
     cx += 16;
   }
   esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_W, y + h, rowbuf);
+  lcd_wait_dma();
 }
 
 void lcd_draw_text_center(int y, const char* s, uint16_t fg, uint16_t bg) {

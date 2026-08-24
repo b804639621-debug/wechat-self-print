@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# arduino-cli 工具链（数百 MB，构建产物在 C:\arduino-build）
+tools/arduino-cli/
+
 # PyInstaller 构建产物（printshop.spec 本身入库）
 build/
 dist/

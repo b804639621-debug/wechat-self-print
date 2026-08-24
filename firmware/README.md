@@ -16,6 +16,7 @@
 | `user_config.h` | 微雪例程原样复制（引脚/显示参数，勿改引脚号） |
 | `src/port_bsp/` | 微雪例程复制：`i2c_bsp`（I2C 总线，lcd_touch 依赖）、`axp2101_bsp`（PMU，含一处编译修复） |
 | `src/externLib/` | 微雪例程复制：`esp_lcd_sh8601.c/.h`（SH8601 显示驱动，display.cpp 依赖） |
+| `src/ricmoo_qrcode/` | ricmoo/QRCode 库**随 sketch  vendored**（qrcode.c/.h）：esp32 core 3.3.x 内置 `espressif__qrcode` 组件的同名头文件会抢占库管理器安装的 QRCode，导致编不过；vendored 后 include 走相对路径 `./src/ricmoo_qrcode/qrcode.h`，不再依赖库管理器安装 |
 | `fonts.h` | 16×16 单色点阵字库（覆盖全部界面文案），由 `gen_font.py` 生成 |
 | `gen_font.py` | 字库生成脚本（改动界面文案后重新运行，需 Pillow） |
 
@@ -32,11 +33,11 @@
 4. 安装库（库管理器）：
    - **WiFiManager**（tzapu，≥ 2.0.17，已兼容 esp32 core 3.x）
    - **ArduinoJson**（**7.x**，本固件按 v7 API 编写，勿装 v6）
-   - **QRCode**（ricmoo）
+   - ~~QRCode（ricmoo）~~ **不用装**：已 vendored 到 `src/ricmoo_qrcode/`（esp32 core 3.3.x 内置同名 `qrcode.h` 会抢占）
    - **XPowersLib**：库管理器可能没有，从微雪仓手动装：
      - `git clone https://gitee.com/waveshare/ESP32-C6-Touch-AMOLED-2.16`
      - 把 `01_Arduino_Libraries/XPowersLib` 整个文件夹拷入 Arduino 库目录
-       （Windows 默认 `%USERPROFILE%\Documents\Arduino\libraries\`）
+       （Windows 默认 `%USERPROFILE%\Documents\Arduino\libraries\`；若文档目录被 OneDrive 重定向则在 `D:\OneDrive\文档\Arduino\libraries\`）
 
 > **AXP2101 电源管理必须装**：这块板子的屏幕供电走 AXP2101 PMU，固件里 `initPMU()` 在显示初始化之前调用，不初始化 PMU 屏不会亮（本任务最高发坑）。
 
@@ -45,9 +46,21 @@
 打开 `print_screen.ino`，Tools（工具）菜单对照微雪仓根目录 `Tools Configuration.png`：
 
 - 开发板：**ESP32C6 Dev Module**
-- Flash Size：**16MB**（如编译报 flash 溢出可保持默认分区表，Flash Size 设 16MB 即可）
+- Flash Size：**16MB**（分区表需选 **8MB with spiffs** 及以上——默认 4MB 分区固件占 99% 贴顶；FQBN 对应 `PartitionScheme=default_8MB`）
 - **USB CDC On Boot：Enabled**（C6 原生 USB 直连；不开则串口监视器无日志）
 - 其余默认
+
+### 命令行（arduino-cli）等效路线
+
+Arduino IDE 可选；本仓库实机烧录用的是 arduino-cli（`tools/arduino-cli/`，已 gitignore）：
+
+```powershell
+$fqbn = "esp32:esp32:esp32c6:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=default_8MB"
+arduino-cli compile --fqbn $fqbn --build-path C:\arduino-build\print_screen firmware\print_screen
+arduino-cli upload -p COM3 --fqbn $fqbn --input-dir C:\arduino-build\print_screen
+```
+
+注意：esp32 工具链的 riscv32 链接器**不能处理中文/非 ASCII 路径**，`--build-path` 与 arduino-cli 数据目录必须用纯 ASCII 路径（如 `C:\arduino-build`、`C:\arduino15`）。
 
 ## 三、编译前修改主控 IP
 
@@ -91,5 +104,8 @@
 ## 八、与微雪例程的差异说明
 
 - **不使用 LVGL**：例程 `09_LVGL_V9_Test` 的 `bsp_lvgl_port.cpp` 强依赖 LVGL（渲染/刷屏/触摸事件回调），本项目 UI 只有二维码 + 单行文字，故自行写了 `display.cpp`，仅复用其中的 SPI/QSPI 初始化、SH8601 面板创建与初始化命令序列，并暴露 `lcd_fill_rect` / `lcd_draw_mono_scaled` / `lcd_draw_text*` / 背光 / 熄屏原语。
+- **esp_lcd 直绘两个实机踩过的坑**（2026-08-24 定位，已修）：
+  1. `tx_color` 是**异步 DMA 事务**，且「1 行 × 几百次」的密集小推送会把 QSPI 推送打挂（实机症状：大块填充/文字正常，逐行推送的二维码整片消失或挤成细条）。`display.cpp` 里所有 `draw_bitmap` 后都跟 `lcd_wait_dma()`（`on_color_trans_done` 信号量同步），`lcd_draw_mono_scaled` 按 32 行条带推送（与 fill_rect 同款节奏）。**改显示代码时不要移除这个等待。**
+  2. 主循环的息屏兜底曾用循环顶部缓存的 `now` 与 `pollScreen()` 内刚更新的 `lastStateChange` 相减 → 无符号下溢成 ~2^32 → 每次轮询都误触发熄屏（屏每 1.5s 明暗交替）。凡「HTTP 耗时调用前后」的时间比较，必须用新鲜 `millis()`。
 - **`axp2101_bsp.cpp` 编译修复**：例程仓该文件使用 `ESP_LOGI/ESP_LOGE(TAG, ...)` 但未定义 `TAG`，本项目补了 `static const char *TAG = "axp2101_bsp";`，其它代码未动。
 - **二维码颜色**：按需求走白底黑码（非反色），微信兼容性更稳；`SCANNED` 状态用 50% 灰码实现“二维码变暗”。
