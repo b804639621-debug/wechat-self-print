@@ -6,25 +6,50 @@ PyInstaller 冻结态：chdir 到 exe 同级目录，使 Config 的相对路径�
 """
 import asyncio
 import contextlib
+import ipaddress
+import logging
 import os
 import sys
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from printshop.config import Config
 from printshop.jobs import JobStore
 from printshop.routes import AppContext, build_router
-from printshop.session_manager import SessionManager
+from printshop.session_manager import SessionManager, SessionState
 from printshop.tray import start_tray
 from printshop.wechat_bot import WeChatClient
+
+_log = logging.getLogger(__name__)
 
 STATIC_DIR = (Path(sys._MEIPASS) / "printshop" / "static"
               if getattr(sys, "frozen", False)
               else Path(__file__).resolve().parent / "static")
+
+_SERVICE_STATES = (SessionState.SCANNED, SessionState.CONNECTED,
+                   SessionState.RECEIVING, SessionState.PRINTING)
+
+# I8：开放 LAN 的白名单前缀（ESP32 小屏 + 调试页 + 静态资源），其余管理端点仅本机
+_PUBLIC_PREFIXES = ("/screen", "/api/screen", "/ws", "/static")
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    if not host:
+        return True
+    if host in ("localhost", "testclient"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True  # 无法解析的 host（如自定义 test client）视为本机
+
+
+def _is_admin_path(path: str) -> bool:
+    return not any(path == p or path.startswith(p) for p in _PUBLIC_PREFIXES)
 
 
 @contextlib.asynccontextmanager
@@ -44,6 +69,19 @@ async def _lifespan(ctx: AppContext):
             await loop_task
         except (asyncio.CancelledError, Exception):
             pass
+        await _shutdown_cleanup(ctx)
+
+
+async def _shutdown_cleanup(ctx: AppContext) -> None:
+    """I7 优雅停机：服务态执行完整收尾语义（logout+inbox/work/trace+archive）；
+    IDLE 也至少清理凭证（state.json）与消息缓存，防下轮启动残留。"""
+    try:
+        if ctx.sm.state in _SERVICE_STATES:
+            await ctx.sm.finish_service()
+        elif ctx.wx is not None:
+            await ctx.wx.logout()
+    except Exception:
+        _log.exception("优雅停机清理失败")
 
 
 def create_app(cfg: Config | None = None, store: JobStore | None = None,
@@ -61,6 +99,17 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
 
     app = FastAPI(title="WeChat Self-Print", lifespan=lambda app: _lifespan(ctx))
     app.state.ctx = ctx
+
+    @app.middleware("http")
+    async def loopback_guard(request, call_next):
+        """I8：管理端点仅允许本机（tray/TestClient 走 127.0.0.1/testclient 不受影响）。"""
+        host = request.client.host if request.client else None
+        if _is_loopback_host(host):
+            return await call_next(request)
+        if _is_admin_path(request.url.path):
+            return JSONResponse(status_code=403, content={"error": "管理端点仅允许本机访问"})
+        return await call_next(request)
+
     app.include_router(build_router(ctx))
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

@@ -120,12 +120,14 @@ def _convert_with_soffice(src: Path, out: Path, cfg: Config) -> bool:
     return True
 
 
-def normalize_to_pdf(src: Path, work_dir: Path, cfg: Config) -> Path:
+def normalize_to_pdf(src: Path, work_dir: Path, cfg: Config, office_com: bool = True) -> Path:
     """把源文件归一为 PDF。
 
     Office 双轨制：Office COM（ExportAsFixedFormat）优先 → LibreOffice 兜底 →
     均不可用抛 FileNotFoundError（界面标红）。图片转 PDF（白底去透明通道）。
     返回的 PDF 不再做 A4 归一化——尺寸适配统一由 XPS 层 Viewport/Viewbox 完成。
+
+    office_com=False 用于 routes 层 COM 超时后强制走 LibreOffice 轨（I6）。
     """
     src = Path(src)
     work_dir = Path(work_dir)
@@ -141,7 +143,8 @@ def normalize_to_pdf(src: Path, work_dir: Path, cfg: Config) -> Path:
         bg.save(out, "PDF")
     elif kind == "office":
         out = _unique_out(work_dir, src)
-        if not (_convert_with_office_com(src, out) or _convert_with_soffice(src, out, cfg)):
+        com_ok = office_com and _convert_with_office_com(src, out)
+        if not (com_ok or _convert_with_soffice(src, out, cfg)):
             raise FileNotFoundError("未安装 Office 或 LibreOffice，无法转换 Office 文件")
     else:
         raise ValueError(f"不支持的文件类型: {src.name}")

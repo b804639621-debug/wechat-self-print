@@ -9,13 +9,13 @@ from printshop.jobs import Job, JobStatus
 from printshop.session_manager import SessionState
 
 
-def _job(id=1, status=JobStatus.PENDING, page_count=0, path="inbox/a1.pdf"):
+def _job(id=1, status=JobStatus.PENDING, page_count=0, path="inbox/a1.pdf", category="pdf"):
     return Job(
         id=id,
         msg_id=f"m{id}",
         file_name=f"a{id}.pdf",
         file_path=path,
-        category="pdf",
+        category=category,
         size_bytes=10,
         page_count=page_count,
         status=status,
@@ -341,6 +341,94 @@ def test_open_dir_outside_inbox_rejected(tmp_path):
     assert r.status_code == 403
     assert "越界" in r.json()["error"]
     popen.assert_not_called()
+
+
+def test_open_other_category_rejected_403(tmp_path):
+    """I5：/open 与 open_dir 对 other 类（可执行/脚本）白名单拒绝。"""
+    app, ctx = _app(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path, path="inbox/a1.pdf", category="other")
+    with patch("os.startfile") as sf, patch("subprocess.Popen") as popen:
+        r1 = TestClient(app).post("/api/jobs/1/open")
+        r2 = TestClient(app).post("/api/jobs/1/open_dir")
+    assert r1.status_code == 403
+    assert r2.status_code == 403
+    sf.assert_not_called()
+    popen.assert_not_called()
+
+
+def test_print_copies_above_99_rejected_422(tmp_path):
+    """I6：copies 上限 99（pydantic le=99 双保险之一）。"""
+    app, ctx = _app(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path)
+    r = TestClient(app).post("/api/jobs/1/print", json={"printer": "EPSON", "copies": 150})
+    assert r.status_code == 422
+
+
+def test_print_office_timeout_falls_back_to_lo(tmp_path):
+    """I6：Office COM 转换超时（wait_for）→ 转 LibreOffice 轨（office_com=False）。"""
+    import time as _time
+    from printshop.routes import PrintOptionsBody
+
+    app, ctx = _app(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path)
+    _write_src(tmp_path)
+    calls = []
+
+    def fake_normalize(src, work_dir, cfg, office_com=True):
+        calls.append(office_com)
+        if office_com:
+            _time.sleep(2)  # 模拟 COM 挂起
+        out = Path(work_dir) / "n.pdf"
+        out.write_bytes(b"%PDF-1.4")
+        return out
+
+    with patch("printshop.routes.normalize_to_pdf", side_effect=fake_normalize), \
+         patch("printshop.routes.print_pdf", return_value=(True, "")), \
+         patch.object(ctx.cfg, "office_convert_timeout", 0.05):
+        r = TestClient(app).post("/api/jobs/1/print",
+                                 json=PrintOptionsBody(printer="EPSON").model_dump())
+    assert r.json()["ok"] is True
+    assert calls == [True, False]
+
+
+def test_print_state_transitions_from_receiving(tmp_path):
+    """M4：RECEIVING 态打印也正确经历 PRINTING→CONNECTED。"""
+    app, ctx = _app(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path)
+    _write_src(tmp_path)
+    ctx.sm.state = SessionState.RECEIVING
+    observed = []
+    ctx.sm.on_change = lambda: observed.append(ctx.sm.state)
+    with patch("printshop.routes.normalize_to_pdf", return_value=_norm_path(tmp_path)), \
+         patch("printshop.routes.print_pdf", return_value=(True, "")):
+        r = TestClient(app).post("/api/jobs/1/print", json={"printer": "EPSON"})
+    assert r.json()["ok"] is True
+    assert SessionState.PRINTING in observed
+    assert ctx.sm.state == SessionState.CONNECTED
+
+
+def test_ws_job_update_carries_error(tmp_path):
+    """M2：failed 的 job_update WS 事件携带 error 字段。"""
+    app, ctx = _app(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path)
+    _write_src(tmp_path)
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws/admin") as ws:
+            ws.receive_json()
+            with patch("printshop.routes.normalize_to_pdf", return_value=_norm_path(tmp_path)), \
+                 patch("printshop.routes.print_pdf", return_value=(False, "缺纸")):
+                r = c.post("/api/jobs/1/print", json={"printer": "EPSON"})
+            assert r.json()["ok"] is False
+            msg = None
+            for _ in range(10):
+                m = ws.receive_json()
+                if m["type"] == "job_update":
+                    msg = m
+                    break
+    assert msg is not None
+    assert msg["id"] == 1
+    assert msg["status"] == JobStatus.FAILED
+    assert msg["error"] == "缺纸"
 
 
 def test_service_finish(tmp_path):

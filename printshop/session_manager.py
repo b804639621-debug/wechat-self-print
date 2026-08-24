@@ -11,11 +11,13 @@ from typing import Callable
 import httpx
 
 from printshop.config import Config
+from printshop.jobs import JobStatus
 from printshop.print_engine import classify_file
 
 _log = logging.getLogger(__name__)
 
 SCANNED_TIMEOUT_SECONDS = 120
+MAX_FILE_BYTES = 25 * 1024 * 1024
 
 
 def _is_network_error(exc: BaseException) -> bool:
@@ -55,7 +57,6 @@ class SessionManager:
         self.state = SessionState.IDLE
         self.display = False
         self.file_count = 0
-        self.qr_png: bytes | None = None
         self.qr_content: str | None = None
         self.on_change: Callable[[], None] | None = None
         self.on_note: Callable[[], None] | None = None
@@ -85,7 +86,7 @@ class SessionManager:
             self._notify()
 
     async def _refresh_qr(self) -> None:
-        self.qr_png, self.qr_content = await self._wx.get_qr()
+        _, self.qr_content = await self._wx.get_qr()
         self._notify()
 
     async def wake(self) -> None:
@@ -131,6 +132,7 @@ class SessionManager:
         if self.state == SessionState.CONNECTED and not self._no_file_reminder:
             if time.monotonic() - self._last_file_ts >= self._cfg.no_file_timeout:
                 self._no_file_reminder = True
+                self._notify()
 
     def _unique_path(self, name: str) -> Path:
         p = self._cfg.inbox_dir / name
@@ -149,6 +151,13 @@ class SessionManager:
         mid = m.get("id")
         file_name = m.get("file_name") or str(mid)
         data = await self._wx.download(mid)
+        if len(data) > MAX_FILE_BYTES:
+            # I6：超限不落盘、不入库内容——标红任务并注明原因（微信侧本应拦截 >25MB）
+            jid = self._store.add(msg_id=mid, file_name=Path(file_name).name, file_path="",
+                                  category="other", size_bytes=len(data), page_count=0)
+            self._store.set_status(jid, JobStatus.FAILED, error="文件超过 25MB，未接收")
+            self.file_count += 1
+            return
         path = self._unique_path(Path(file_name).name)
         path.write_bytes(data)
         self._store.add(
@@ -225,6 +234,7 @@ class SessionManager:
             "qr_content": self.qr_content,
             "file_count": self.file_count,
             "message": self._note,
+            "no_file_reminder": self._no_file_reminder,
         }
 
     def _clean_dir(self, directory: Path | None) -> list[str]:
@@ -305,6 +315,13 @@ class SessionManager:
             _log.exception("保存微信会话失败（忽略，不影响服务）")
             return False
 
+    def _restore_file_count(self) -> None:
+        """M3：启动时从 JobStore 数活跃任务，恢复 file_count（重启后不归零）。"""
+        try:
+            self.file_count = len(self._store.list_active())
+        except Exception:
+            pass
+
     async def restore_session(self) -> bool:
         """启动时恢复凭证：有效→直接进服务态（免扫码）；无效/异常→保持 IDLE 正常出码。"""
         try:
@@ -312,6 +329,7 @@ class SessionManager:
         except Exception:
             _log.exception("恢复微信会话失败，走正常出码流程")
             ok = False
+        self._restore_file_count()
         if ok:
             self._last_event_ts = time.monotonic()
             self._last_file_ts = time.monotonic()

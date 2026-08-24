@@ -1,6 +1,8 @@
 """Task 11 加固与恢复：断线重连（指数退避）、凭证恢复、看门狗、定时保存会话。"""
+import asyncio
 import logging
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -26,6 +28,7 @@ def test_config_recovery_defaults():
     assert c.network_backoff == (5, 15, 60)
     assert c.network_max_failures == 3
     assert c.session_save_interval == 600
+    assert c.office_convert_timeout == 120.0
 
 
 def test_network_error_classification():
@@ -328,3 +331,75 @@ def test_lifespan_restore_session_enters_service_state(tmp_path):
         sm = app.state.ctx.sm
         assert sm.state == SessionState.CONNECTED
         assert sm.display is True
+
+
+def test_lifespan_shutdown_cleans_service_state(tmp_path):
+    """I7：服务态优雅停机——shutdown 执行 finish_service 同语义清理（logout 必被调用）。"""
+    from fastapi.testclient import TestClient
+    from printshop.main import create_app
+
+    cfg = Config()
+    cfg.inbox_dir = tmp_path / "inbox"; cfg.work_dir = tmp_path / "work"
+    cfg.db_path = tmp_path / "t.db"
+    wx = AsyncMock()
+    wx.restore_session = AsyncMock(return_value=True)
+    wx.fetch_messages = AsyncMock(return_value=[])
+    wx.is_authed = MagicMock(return_value=True)
+    app = create_app(cfg=cfg, store=MagicMock(), wx=wx)
+    with TestClient(app):
+        assert app.state.ctx.sm.state == SessionState.CONNECTED
+    wx.logout.assert_awaited_once()
+
+
+def test_lifespan_shutdown_cleans_state_when_idle(tmp_path):
+    """I7：IDLE 优雅停机——至少调用 wx.logout() 清 state.json 凭证与消息缓存。"""
+    from fastapi.testclient import TestClient
+    from printshop.main import create_app
+
+    cfg = Config()
+    cfg.inbox_dir = tmp_path / "inbox"; cfg.work_dir = tmp_path / "work"
+    cfg.db_path = tmp_path / "t.db"
+    wx = AsyncMock()
+    wx.restore_session = AsyncMock(return_value=False)
+    app = create_app(cfg=cfg, store=MagicMock(), wx=wx)
+    with TestClient(app):
+        assert app.state.ctx.sm.state == SessionState.IDLE
+    wx.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_loopback_guard_blocks_non_loopback_admin(tmp_path):
+    """I8：非回环访问管理端点 403；/screen、/api/screen/* 开放 LAN。"""
+    import httpx
+    from printshop.main import create_app
+
+    cfg = Config()
+    cfg.inbox_dir = tmp_path / "inbox"; cfg.work_dir = tmp_path / "work"
+    cfg.db_path = tmp_path / "t.db"
+    app = create_app(cfg=cfg, store=MagicMock(), wx=AsyncMock())
+    transport = httpx.ASGITransport(app=app, client=("192.168.1.50", 50000))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        assert (await c.get("/admin")).status_code == 403
+        assert (await c.get("/api/printers")).status_code == 403
+        assert (await c.get("/api/jobs")).status_code == 403
+        assert (await c.get("/api/screen/state")).status_code == 200
+        assert (await c.get("/screen")).status_code == 200
+
+
+def test_loopback_guard_helpers():
+    from printshop.main import _is_admin_path, _is_loopback_host
+
+    assert _is_loopback_host("127.0.0.1") is True
+    assert _is_loopback_host("::1") is True
+    assert _is_loopback_host("localhost") is True
+    assert _is_loopback_host("testclient") is True
+    assert _is_loopback_host(None) is True
+    assert _is_loopback_host("192.168.1.50") is False
+    assert _is_admin_path("/admin") is True
+    assert _is_admin_path("/api/jobs") is True
+    assert _is_admin_path("/api/service/finish") is True
+    assert _is_admin_path("/api/screen/state") is False
+    assert _is_admin_path("/api/screen/wake") is False
+    assert _is_admin_path("/ws/admin") is False
+    assert _is_admin_path("/screen") is False
+    assert _is_admin_path("/static/admin.html") is False

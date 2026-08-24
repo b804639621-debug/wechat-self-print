@@ -207,7 +207,7 @@ def print_ticket_xml(o: PrintOptions) -> str:
     except KeyError:
         raise ValueError(f"暂不支持纸张规格: {o.paper!r}（当前仅支持 A4）") from None
     color = "Color" if o.color else "Monochrome"
-    copies = max(1, int(o.copies))
+    copies = max(1, min(99, int(o.copies)))
     e = saxutils_escape
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <psf:PrintTicket xmlns:psf="http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" version="1" xmlns:psk="http://schemas.microsoft.com/windows/2003/08/printing/printschemakeywords">

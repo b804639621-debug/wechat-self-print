@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from printshop.jobs import JobStatus
 from printshop.session_manager import SessionManager, SessionState
 from printshop.config import Config
 
@@ -324,7 +325,8 @@ def test_screen_state_contract():
     sm.file_count = 3
     sm.qr_content = "https://login.weixin.qq.com/l/x"
     s = sm.screen_state()
-    assert set(s.keys()) == {"state", "display", "qr_content", "file_count", "message"}
+    assert set(s.keys()) == {"state", "display", "qr_content", "file_count", "message",
+                             "no_file_reminder"}
     assert s["display"] == "on"
     assert s["state"] == SessionState.IDLE
     assert s["qr_content"] == "https://login.weixin.qq.com/l/x"
@@ -465,3 +467,45 @@ async def test_finish_service_reports_cleanup_failure(tmp_path):
     assert result["ok"] is False
     assert "a.pdf" in str(result["failures"])
     assert notices == [("cleanup_failed", "文件清理失败，请手动删除 inbox")]
+
+
+def test_no_file_timeout_notifies_and_exposes_field():
+    """I2：5 分钟无文件提醒闭环——置位时 notify 推 WS，screen_state 暴露字段。"""
+    cfg = Config(); cfg.no_file_timeout = 300
+    sm = SessionManager(cfg, MagicMock(), MagicMock())
+    sm.state = SessionState.CONNECTED
+    sm._last_file_ts = time.monotonic() - 400
+    pushed = []
+    sm.on_change = lambda: pushed.append(sm.screen_state()["no_file_reminder"])
+    sm._check_no_file_timeout()
+    assert sm._no_file_reminder is True
+    assert pushed == [True]
+    assert sm.screen_state()["no_file_reminder"] is True
+
+
+@pytest.mark.asyncio
+async def test_restore_session_restores_file_count(tmp_path):
+    """M3：启动恢复时从 JobStore 数活跃任务置 file_count。"""
+    cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
+    store = MagicMock()
+    store.list_active.return_value = [object(), object()]  # 2 个活跃任务
+    sm = SessionManager(cfg, MagicMock(), store)
+    sm._wx.restore_session = AsyncMock(return_value=False)
+    await sm.restore_session()
+    assert sm.file_count == 2
+
+
+@pytest.mark.asyncio
+async def test_receive_oversized_file_marked_failed_not_persisted(tmp_path):
+    """I6：收件 >25MB 不入库内容、不落盘，标红任务注明原因。"""
+    cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
+    store = MagicMock()
+    store.add.return_value = 42
+    sm = SessionManager(cfg, MagicMock(), store)
+    sm._wx.download = AsyncMock(return_value=b"x" * (25 * 1024 * 1024 + 1))
+    await sm._receive_file({"id": "big", "file_name": "big.docx"})
+    assert list(tmp_path.iterdir()) == []  # 未落盘
+    assert store.add.call_args.kwargs["category"] == "other"
+    assert store.add.call_args.kwargs["file_path"] == ""
+    store.set_status.assert_called_once_with(42, JobStatus.FAILED, error="文件超过 25MB，未接收")
+    assert sm.file_count == 1

@@ -154,6 +154,14 @@ def test_print_ticket_xml_duplex_color_copies_paper():
     assert "ISOA4" in xml
 
 
+def test_print_ticket_xml_clamps_copies_to_1_99():
+    """I6：copies 双保险——xps_print 层钳制到 [1,99]。"""
+    xml = print_ticket_xml(PrintOptions(printer="P", copies=999))
+    assert ">99</psf:Value>" in xml
+    xml = print_ticket_xml(PrintOptions(printer="P", copies=0))
+    assert ">1</psf:Value>" in xml
+
+
 def test_print_ticket_xml_simplex_color_default():
     o = PrintOptions(printer="P")
     xml = print_ticket_xml(o)

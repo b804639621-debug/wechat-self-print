@@ -9,14 +9,13 @@ class Config:
     inbox_dir: Path = field(default_factory=lambda: Path("inbox"))
     work_dir: Path = field(default_factory=lambda: Path("work"))
     db_path: Path = field(default_factory=lambda: Path("printshop.db"))
-    sumatra_path: Path = field(default_factory=lambda: Path("tools/SumatraPDF.exe"))
     soffice_path: str = r"C:\Program Files\LibreOffice\program\soffice.exe"
     render_dpi: int = 300
     max_render_pages: int = 200
     idle_sleep_seconds: int = 180
-    qr_expire_seconds: int = 240
     no_file_timeout: int = 300
     poll_interval: float = 1.5
+    office_convert_timeout: float = 120.0
     network_backoff: tuple = (5, 15, 60)
     network_max_failures: int = 3
     session_save_interval: float = 600.0

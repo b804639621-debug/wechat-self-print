@@ -229,13 +229,9 @@
       </div>
       <div class="field">
         <label>纸张</label>
+        <!-- Task 7B 定案仅支持 A4；扩展时同步 xps_print._PAPER_MAP -->
         <select id="paper">
-          <option>A4</option>
-          <option>A3</option>
-          <option>A5</option>
-          <option>B5</option>
-          <option>Letter</option>
-          <option>Legal</option>
+          <option value="A4">A4（仅支持 A4）</option>
         </select>
       </div>
       <div class="btn-group">
@@ -355,7 +351,11 @@
       if (d.copies) $("copies").value = d.copies;
       if (d.pages !== undefined && d.pages !== null) $("pages").value = d.pages;
       if (d.duplex) $("duplex").value = d.duplex;
-      if (d.paper) $("paper").value = d.paper;
+      if (d.paper) {
+        var paperSel = $("paper");
+        if (paperSel.querySelector('option[value="' + d.paper + '"]')) paperSel.value = d.paper;
+        else paperSel.value = "A4";  // 清理已废弃的非 A4 记忆值（仅支持 A4）
+      }
     } catch (e) {}
     syncRadioStyle();
   }

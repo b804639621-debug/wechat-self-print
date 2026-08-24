@@ -7,6 +7,7 @@
 """
 import asyncio
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from printshop.jobs import JobStatus
 from printshop.print_engine import (
@@ -27,11 +28,13 @@ from printshop.print_engine import (
 )
 from printshop.session_manager import SessionState
 
+_log = logging.getLogger(__name__)
+
 
 class PrintOptionsBody(BaseModel):
     printer: str
     color: bool = True
-    copies: int = 1
+    copies: int = Field(1, ge=1, le=99)
     pages: str = ""
     duplex: str = "simplex"
     paper: str = "A4"
@@ -123,18 +126,31 @@ def build_router(ctx: AppContext) -> APIRouter:
     store = ctx.store
     sm = ctx.sm
 
-    def emit_job_update(job_id: int, status: str) -> None:
-        ctx.emit("job_update", id=job_id, status=status)
+    def emit_job_update(job_id: int, status: str, error: str = "") -> None:
+        payload = {"id": job_id, "status": status}
+        if error:
+            payload["error"] = error
+        ctx.emit("job_update", **payload)
 
     async def ensure_pdf(job) -> Path:
-        """normalize 产物按 job_id 缓存在 work_dir，已转换过的不重复转换。"""
+        """normalize 产物按 job_id 缓存在 work_dir，已转换过的不重复转换。
+
+        I6：Office COM 转换可能挂起——asyncio.wait_for 120s 超时后转 LibreOffice 轨再兜底。
+        """
         cached = cfg.work_dir / f"job_{job.id}.pdf"
         if cached.exists():
             return cached
         src = Path(job.file_path)
         if not src.exists():
             raise FileNotFoundError(f"源文件不存在：{job.file_name}")
-        out = await asyncio.to_thread(normalize_to_pdf, src, cfg.work_dir, cfg)
+        try:
+            out = await asyncio.wait_for(
+                asyncio.to_thread(normalize_to_pdf, src, cfg.work_dir, cfg),
+                timeout=cfg.office_convert_timeout)
+        except asyncio.TimeoutError:
+            _log.warning("Office 转换超时（>%.0fs），转 LibreOffice 轨", cfg.office_convert_timeout)
+            out = await asyncio.to_thread(normalize_to_pdf, src, cfg.work_dir, cfg,
+                                          office_com=False)
         shutil.copy(out, cached)
         return cached
 
@@ -153,16 +169,16 @@ def build_router(ctx: AppContext) -> APIRouter:
             pdf = await ensure_pdf(job)
         except Exception as exc:
             store.set_status(job.id, JobStatus.FAILED, error=str(exc))
-            emit_job_update(job.id, JobStatus.FAILED)
+            emit_job_update(job.id, JobStatus.FAILED, error=str(exc))
             return {"ok": False, "error": f"文件转换失败：{exc}"}
         backfill_page_count(job, pdf)
         opts = PrintOptions(printer=body.printer, color=body.color, copies=body.copies,
                             pages=body.pages, duplex=body.duplex, paper=body.paper)
         prev = sm.state
-        if prev == SessionState.CONNECTED:
+        if prev in (SessionState.CONNECTED, SessionState.RECEIVING):
             sm._transition(SessionState.PRINTING)
         ok, error = await asyncio.to_thread(print_pdf, cfg, pdf, opts)
-        if prev == SessionState.CONNECTED:
+        if prev in (SessionState.CONNECTED, SessionState.RECEIVING):
             sm._transition(SessionState.CONNECTED)
         if ok:
             store.set_status(job.id, JobStatus.DONE,
@@ -171,7 +187,7 @@ def build_router(ctx: AppContext) -> APIRouter:
             emit_job_update(job.id, JobStatus.DONE)
         else:
             store.set_status(job.id, JobStatus.FAILED, error=error)
-            emit_job_update(job.id, JobStatus.FAILED)
+            emit_job_update(job.id, JobStatus.FAILED, error=error)
         return {"ok": ok, "error": "" if ok else error}
 
     @router.get("/api/screen/state")
@@ -257,6 +273,9 @@ def build_router(ctx: AppContext) -> APIRouter:
         job = store.get(job_id)
         if job is None:
             return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
+        if job.category == "other":
+            return JSONResponse(status_code=403,
+                                content={"ok": False, "error": "该文件类型不支持打开（other 类禁止执行）"})
         try:
             target = _validate_job_path(cfg, job.file_path)
         except FileNotFoundError as exc:
@@ -274,6 +293,9 @@ def build_router(ctx: AppContext) -> APIRouter:
         job = store.get(job_id)
         if job is None:
             return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
+        if job.category == "other":
+            return JSONResponse(status_code=403,
+                                content={"ok": False, "error": "该文件类型不支持打开目录（other 类禁止）"})
         try:
             target = _validate_job_path(cfg, job.file_path)
         except FileNotFoundError as exc:
