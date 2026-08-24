@@ -165,7 +165,8 @@ class SessionManager:
         if not msgs:
             # 空列表 + 服务端已判失效（is_logged_in=False，如他端登出/凭证过期）→
             # 登出回 IDLE 出新码，避免 CONNECTED 亮屏空转；凭证仍有效 = 正常无消息。
-            if not await self._wx.is_authed():
+            # is_authed 是 sync 纯属性读取（WeChatClient.is_authed），勿 await。
+            if not self._wx.is_authed():
                 await self._logout_to_idle_with_fresh_qr()
             return
         pending = [m for m in msgs if m.get("id") not in self._seen_msg_ids]
@@ -328,7 +329,7 @@ class SessionManager:
         elif n % 10 == 0:
             _log.exception("run_loop 迭代异常（看门狗兜底）已连续 %d 次，继续下一轮", n)
         else:
-            _log.warning("run_loop 迭代异常第 %d 次（每 10 次记一次完整 traceback），继续下一轮", n)
+            _log.warning("run_loop 迭代异常第 %d 次（首次及每 10 次记一次完整 traceback），继续下一轮", n)
 
     async def run_loop(self) -> None:
         iterations = 0

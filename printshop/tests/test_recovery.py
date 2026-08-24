@@ -110,7 +110,7 @@ async def test_reconnect_counter_resets_on_success(tmp_path):
     sm.state = SessionState.CONNECTED
     sm._wx.fetch_messages = AsyncMock(side_effect=[
         httpx.ConnectError("x"), httpx.ConnectError("x"), [], httpx.ConnectError("x")])
-    sm._wx.is_authed = AsyncMock(return_value=True)
+    sm._wx.is_authed = MagicMock(return_value=True)
     sm._wx.logout = AsyncMock()
     sleeps = []
     sm._sleep = _recorder(sleeps)
@@ -191,7 +191,7 @@ async def test_periodic_save_in_run_loop(tmp_path):
     sm.state = SessionState.CONNECTED
     sm._last_save_ts = time.monotonic() - 601
     sm._wx.fetch_messages = AsyncMock(return_value=[])
-    sm._wx.is_authed = AsyncMock(return_value=True)
+    sm._wx.is_authed = MagicMock(return_value=True)
     sm._wx.save_session = AsyncMock(return_value=True)
     await sm.run_loop()
     sm._wx.save_session.assert_awaited_once()
@@ -215,7 +215,7 @@ async def test_invalid_session_logs_out_to_idle_fresh_qr(tmp_path):
     sm.display = True
     sm.state = SessionState.CONNECTED
     sm._wx.fetch_messages = AsyncMock(return_value=[])
-    sm._wx.is_authed = AsyncMock(return_value=False)
+    sm._wx.is_authed = MagicMock(return_value=False)
     sm._wx.logout = AsyncMock()
     sm._wx.get_qr = AsyncMock(return_value=(b"P", "https://login.weixin.qq.com/l/fresh"))
     await sm.run_loop()
@@ -232,7 +232,7 @@ async def test_empty_fetch_with_valid_session_keeps_connected(tmp_path):
     sm.display = True
     sm.state = SessionState.CONNECTED
     sm._wx.fetch_messages = AsyncMock(return_value=[])
-    sm._wx.is_authed = AsyncMock(return_value=True)
+    sm._wx.is_authed = MagicMock(return_value=True)
     sm._wx.logout = AsyncMock()
     await sm.run_loop()
     assert sm.state == SessionState.CONNECTED
@@ -282,6 +282,32 @@ async def test_watchdog_logs_rate_limited(tmp_path, caplog):
     assert len(warnings) == 22   # 其余一行摘要
 
 
+@pytest.mark.asyncio
+async def test_invalid_session_detected_with_real_is_authed(tmp_path):
+    """防回归：真 WeChatClient.is_authed 为 sync 方法（纯属性读取），不得 await。
+
+    若 session_manager 误用 await 调用 sync is_authed，运行期抛 TypeError（bool 不可 await）
+    被看门狗吞掉，登出不触发、state 停留 CONNECTED —— 本测试将变红。
+    """
+    from printshop.wechat_bot import WeChatClient
+
+    cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
+    wx = WeChatClient(entry_host="szfilehelper.weixin.qq.com")
+    wx._bot = MagicMock()
+    wx._bot.is_logged_in = False
+    wx.fetch_messages = AsyncMock(return_value=[])
+    wx.logout = AsyncMock()
+    wx.get_qr = AsyncMock(return_value=(b"P", "https://login.weixin.qq.com/l/fresh"))
+    sm = SessionManager(cfg, wx, MagicMock(), max_iterations=1)
+    sm.display = True
+    sm.state = SessionState.CONNECTED
+    await sm.run_loop()
+    assert sm.state == SessionState.IDLE
+    assert sm.display is True
+    assert sm.qr_content.endswith("/l/fresh")
+    wx.logout.assert_awaited_once()
+
+
 def test_lifespan_restore_session_enters_service_state(tmp_path):
     from fastapi.testclient import TestClient
     from printshop.main import create_app
@@ -293,7 +319,7 @@ def test_lifespan_restore_session_enters_service_state(tmp_path):
     wx = AsyncMock()
     wx.restore_session = AsyncMock(return_value=True)
     wx.fetch_messages = AsyncMock(return_value=[])
-    wx.is_authed = AsyncMock(return_value=True)
+    wx.is_authed = MagicMock(return_value=True)
     app = create_app(cfg=cfg, store=MagicMock(), wx=wx)
     with TestClient(app):
         sm = app.state.ctx.sm
