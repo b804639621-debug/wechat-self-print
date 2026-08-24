@@ -49,6 +49,7 @@ class SessionManager:
         self._wx = wx
         self._store = store
         self._sleep = sleep
+        # max_iterations 仅测试用途：限定 run_loop 迭代次数，便于确定性退出，生产为 None
         self.max_iterations = max_iterations
 
         self.state = SessionState.IDLE
@@ -104,6 +105,9 @@ class SessionManager:
             self._last_event_ts = time.monotonic()
             self._last_file_ts = time.monotonic()
             self._transition(SessionState.CONNECTED)
+            # 保留此处保存：SessionManager 走 wx.poll_login()→vendor _poll_login_once()
+            # 直连路径，不会触发 vendor check_login_status() 内部的 save_session
+            # （direct_bot.py:324 仅在 check_login_status 路径生效），故必须显式保存。
             await self._save_session()
         elif status == "expired":
             await self._refresh_qr()
@@ -159,6 +163,10 @@ class SessionManager:
             return
         msgs = await self._wx.fetch_messages()
         if not msgs:
+            # 空列表 + 服务端已判失效（is_logged_in=False，如他端登出/凭证过期）→
+            # 登出回 IDLE 出新码，避免 CONNECTED 亮屏空转；凭证仍有效 = 正常无消息。
+            if not await self._wx.is_authed():
+                await self._logout_to_idle_with_fresh_qr()
             return
         pending = [m for m in msgs if m.get("id") not in self._seen_msg_ids]
         if not pending:
@@ -235,14 +243,22 @@ class SessionManager:
             self._seen_msg_ids.clear()
             self._scanned_ts = None
             self._last_event_ts = time.monotonic()
+            self._reconnect_failures = 0
             self._transition(SessionState.IDLE)
             self._set_display(False)
 
-    async def _save_session(self) -> None:
+    async def _logout_to_idle_with_fresh_qr(self) -> None:
+        """登出回到 IDLE 并刷新二维码（断线重试耗尽/服务端凭证失效共用）。"""
+        await self.finish_service()
+        self._set_display(True)
+        await self._refresh_qr()
+
+    async def _save_session(self) -> bool:
         try:
-            await self._wx.save_session()
+            return bool(await self._wx.save_session())
         except Exception:
             _log.exception("保存微信会话失败（忽略，不影响服务）")
+            return False
 
     async def restore_session(self) -> bool:
         """启动时恢复凭证：有效→直接进服务态（免扫码）；无效/异常→保持 IDLE 正常出码。"""
@@ -268,9 +284,7 @@ class SessionManager:
         if n > self._cfg.network_max_failures:
             _log.warning("fetch_messages 连续网络失败 %d 次，登出并刷新二维码", n)
             self._reconnect_failures = 0
-            await self.finish_service()
-            self._set_display(True)
-            await self._refresh_qr()
+            await self._logout_to_idle_with_fresh_qr()
             return
         delay = self._network_backoff_delay(n)
         _log.warning("fetch_messages 网络异常（第 %d 次），%.0fs 后重试", n, delay)
@@ -281,8 +295,9 @@ class SessionManager:
             return
         if time.monotonic() - self._last_save_ts < self._cfg.session_save_interval:
             return
-        self._last_save_ts = time.monotonic()
-        await self._save_session()
+        # 仅保存成功后推进时间戳：失败则下轮即重试，缩短重试周期
+        if await self._save_session():
+            self._last_save_ts = time.monotonic()
 
     async def _run_once(self) -> None:
         if self.state == SessionState.IDLE:
@@ -307,8 +322,17 @@ class SessionManager:
                     raise
         await self._maybe_periodic_save()
 
+    def _log_watchdog(self, n: int) -> None:
+        if n == 1:
+            _log.exception("run_loop 迭代异常（看门狗兜底），继续下一轮")
+        elif n % 10 == 0:
+            _log.exception("run_loop 迭代异常（看门狗兜底）已连续 %d 次，继续下一轮", n)
+        else:
+            _log.warning("run_loop 迭代异常第 %d 次（每 10 次记一次完整 traceback），继续下一轮", n)
+
     async def run_loop(self) -> None:
         iterations = 0
+        consecutive = 0
         while True:
             iterations += 1
             if self.max_iterations is not None and iterations > self.max_iterations:
@@ -318,5 +342,8 @@ class SessionManager:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                _log.exception("run_loop 迭代异常（看门狗兜底），继续下一轮")
+                consecutive += 1
+                self._log_watchdog(consecutive)
+            else:
+                consecutive = 0
             await self._sleep(self._cfg.poll_interval)

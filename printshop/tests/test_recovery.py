@@ -1,4 +1,5 @@
 """Task 11 加固与恢复：断线重连（指数退避）、凭证恢复、看门狗、定时保存会话。"""
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,7 +84,7 @@ async def test_network_failure_backoff_keeps_connected(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_three_consecutive_failures_logout_fresh_qr(tmp_path):
+async def test_backoff_exhausted_logout_fresh_qr(tmp_path):
     cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
     sm = SessionManager(cfg, MagicMock(), MagicMock(), max_iterations=4)
     sm.display = True
@@ -109,6 +110,7 @@ async def test_reconnect_counter_resets_on_success(tmp_path):
     sm.state = SessionState.CONNECTED
     sm._wx.fetch_messages = AsyncMock(side_effect=[
         httpx.ConnectError("x"), httpx.ConnectError("x"), [], httpx.ConnectError("x")])
+    sm._wx.is_authed = AsyncMock(return_value=True)
     sm._wx.logout = AsyncMock()
     sleeps = []
     sm._sleep = _recorder(sleeps)
@@ -189,7 +191,8 @@ async def test_periodic_save_in_run_loop(tmp_path):
     sm.state = SessionState.CONNECTED
     sm._last_save_ts = time.monotonic() - 601
     sm._wx.fetch_messages = AsyncMock(return_value=[])
-    sm._wx.save_session = AsyncMock()
+    sm._wx.is_authed = AsyncMock(return_value=True)
+    sm._wx.save_session = AsyncMock(return_value=True)
     await sm.run_loop()
     sm._wx.save_session.assert_awaited_once()
     assert sm._last_save_ts > time.monotonic() - 1
@@ -205,14 +208,93 @@ async def test_run_loop_watchdog_survives_iteration_error(tmp_path):
     assert sm._wx.poll_login.await_count == 3
 
 
-def test_lifespan_restore_session_enters_service_state():
+@pytest.mark.asyncio
+async def test_invalid_session_logs_out_to_idle_fresh_qr(tmp_path):
+    cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
+    sm = SessionManager(cfg, MagicMock(), MagicMock(), max_iterations=1)
+    sm.display = True
+    sm.state = SessionState.CONNECTED
+    sm._wx.fetch_messages = AsyncMock(return_value=[])
+    sm._wx.is_authed = AsyncMock(return_value=False)
+    sm._wx.logout = AsyncMock()
+    sm._wx.get_qr = AsyncMock(return_value=(b"P", "https://login.weixin.qq.com/l/fresh"))
+    await sm.run_loop()
+    assert sm.state == SessionState.IDLE
+    assert sm.display is True
+    assert sm.qr_content.endswith("/l/fresh")
+    sm._wx.logout.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_empty_fetch_with_valid_session_keeps_connected(tmp_path):
+    cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
+    sm = SessionManager(cfg, MagicMock(), MagicMock(), max_iterations=2)
+    sm.display = True
+    sm.state = SessionState.CONNECTED
+    sm._wx.fetch_messages = AsyncMock(return_value=[])
+    sm._wx.is_authed = AsyncMock(return_value=True)
+    sm._wx.logout = AsyncMock()
+    await sm.run_loop()
+    assert sm.state == SessionState.CONNECTED
+    sm._wx.logout.assert_not_awaited()
+    assert sm._reconnect_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_finish_service_resets_reconnect_counter(tmp_path):
+    cfg = Config(); cfg.inbox_dir = tmp_path
+    sm = _sm(cfg)
+    sm._wx.logout = AsyncMock()
+    sm.state = SessionState.CONNECTED
+    sm._reconnect_failures = 3
+    await sm.finish_service()
+    assert sm._reconnect_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_periodic_save_retries_next_round_on_failure(tmp_path):
+    cfg = Config(); cfg.inbox_dir = tmp_path
+    sm = _sm(cfg)
+    sm.state = SessionState.CONNECTED
+    sm._last_save_ts = time.monotonic() - 601
+    old = sm._last_save_ts
+    sm._wx.save_session = AsyncMock(side_effect=RuntimeError("disk full"))
+    await sm._maybe_periodic_save()
+    assert sm._last_save_ts == old  # 失败不推进 → 下轮即重试
+    sm._wx.save_session = AsyncMock(return_value=True)
+    await sm._maybe_periodic_save()
+    sm._wx.save_session.assert_awaited_once()
+    assert sm._last_save_ts > time.monotonic() - 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_logs_rate_limited(tmp_path, caplog):
+    cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
+    sm = SessionManager(cfg, MagicMock(), MagicMock(), max_iterations=25)
+    sm.display = True
+    sm._wx.poll_login = AsyncMock(side_effect=RuntimeError("boom"))
+    with caplog.at_level(logging.WARNING, logger="printshop.session_manager"):
+        await sm.run_loop()
+    records = [r for r in caplog.records if r.name == "printshop.session_manager"]
+    errors = [r for r in records if r.levelno == logging.ERROR]
+    warnings = [r for r in records if r.levelno == logging.WARNING]
+    assert len(errors) == 3      # n=1、10、20 记完整 traceback
+    assert len(warnings) == 22   # 其余一行摘要
+
+
+def test_lifespan_restore_session_enters_service_state(tmp_path):
     from fastapi.testclient import TestClient
     from printshop.main import create_app
 
+    cfg = Config()
+    cfg.inbox_dir = tmp_path / "inbox"
+    cfg.work_dir = tmp_path / "work"
+    cfg.db_path = tmp_path / "t.db"
     wx = AsyncMock()
     wx.restore_session = AsyncMock(return_value=True)
     wx.fetch_messages = AsyncMock(return_value=[])
-    app = create_app(cfg=Config(), store=MagicMock(), wx=wx)
+    wx.is_authed = AsyncMock(return_value=True)
+    app = create_app(cfg=cfg, store=MagicMock(), wx=wx)
     with TestClient(app):
         sm = app.state.ctx.sm
         assert sm.state == SessionState.CONNECTED

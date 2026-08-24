@@ -94,12 +94,19 @@ class WeChatClient:
             pass
 
     def is_authed(self) -> bool:
-        return bool(self._bot._has_auth())
+        """会话是否仍有效（服务端确认态）。
 
-    async def save_session(self) -> None:
-        """持久化当前登录态到 vendor state.json（登录成功与定时由 SessionManager 调度）。"""
+        用 vendor 的 is_logged_in 而非 _has_auth()：vendor 在 synccheck 检测到
+        loginout（retcode!=0，direct_bot.py:646-647）时只置 is_logged_in=False，
+        凭证字段（skey/sid/uin/pass_ticket）并未清空，只有 is_logged_in 能反映
+        服务端失效。
+        """
+        return bool(self._bot.is_logged_in)
+
+    async def save_session(self) -> bool:
+        """持久化当前登录态到 vendor state.json，成功返回 True（供定时保存推进时间戳）。"""
         await self._ensure_started()
-        await self._bot.save_session()
+        return bool(await self._bot.save_session())
 
     async def restore_session(self) -> bool:
         await self._ensure_started()

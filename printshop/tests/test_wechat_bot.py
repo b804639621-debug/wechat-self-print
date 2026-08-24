@@ -168,9 +168,9 @@ async def test_restore_session_false_after_logout(tmp_path):
 
 def test_is_authed_delegates_to_vendor():
     c = _client()
-    c._bot._has_auth = MagicMock(return_value=True)
+    c._bot.is_logged_in = True
     assert c.is_authed() is True
-    c._bot._has_auth = MagicMock(return_value=False)
+    c._bot.is_logged_in = False
     assert c.is_authed() is False
 
 
