@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>微信扫码·自助打印 — 柜台立牌</title>
+<style>
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  :root {
+    --green: #07c160;
+    --ink: #1f2328;
+    --sub: #57606a;
+    --line: #d0d7de;
+  }
+  @page { size: A5 portrait; margin: 0; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #eef1f4;
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI", "Microsoft JhengHei", sans-serif;
+    color: var(--ink);
+  }
+  .sheet {
+    width: 148mm;
+    height: 210mm;
+    margin: 0 auto;
+    background: #fff;
+    padding: 8mm 7mm 5mm;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 2px 14px rgba(0,0,0,.18);
+  }
+  @media print {
+    body { background: #fff; }
+    .sheet { box-shadow: none; margin: 0; }
+  }
+
+  /* ---------- 标题区 ---------- */
+  header { margin-bottom: 5mm; }
+  .kicker {
+    display: flex; align-items: center; gap: 3px;
+    font-size: 11px; color: var(--sub); letter-spacing: 2px; margin-bottom: 2px;
+  }
+  .kicker::before { content: "◆"; color: var(--green); font-size: 8px; }
+  h1 {
+    margin: 0; font-size: 30px; line-height: 1.15; letter-spacing: 2px;
+    padding-left: 6px;
+    border-left: 6px solid var(--green);
+    font-weight: 800;
+  }
+
+  /* ---------- 三步 ---------- */
+  .steps { display: flex; flex-direction: column; }
+  .step {
+    display: flex; align-items: center; gap: 4mm;
+    padding: 3mm 4mm; margin-bottom: 3.5mm;
+    background: #fafbfc; border: 1px solid #eef0f2; border-radius: 5px;
+  }
+  .num {
+    width: 17mm; height: 17mm; flex-shrink: 0;
+    border-radius: 50%; background: var(--green); color: #fff;
+    font-size: 24px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 1px 3px rgba(7,193,96,.35);
+  }
+  .txt h2 { margin: 0 0 1px; font-size: 19px; font-weight: 700; line-height: 1.25; }
+  .txt p  { margin: 0; font-size: 12px; color: var(--sub); line-height: 1.45; }
+  .dia { margin-left: auto; flex-shrink: 0; }
+
+  /* 示意图通用 */
+  .d1 { display: flex; align-items: flex-end; }
+  .phone {
+    position: relative; width: 16px; height: 30px;
+    border: 3px solid var(--ink); border-radius: 5px; background: #fff; flex-shrink: 0;
+    margin-bottom: 2px;
+  }
+  .scan {
+    width: 18px; height: 2px;
+    border-top: 2px dashed var(--green);
+    position: relative; margin: 0 2px 9px 0;
+  }
+  .scan::after {
+    content: ""; position: absolute; right: -5px; top: -4px;
+    border: 4px solid transparent; border-left: 7px solid var(--green);
+  }
+  .scr {
+    position: relative; width: 66px; height: 56px;
+    border: 3px solid var(--ink); border-radius: 4px; background: #fff;
+  }
+  .scr .qr {
+    position: absolute; inset: 0; margin: auto;
+    width: 44px; height: 44px;
+    display: grid; grid-template-columns: repeat(15, 1fr); grid-template-rows: repeat(15, 1fr);
+  }
+  .scr .qr i { background: var(--ink); }
+  .scr .qr i.w { background: transparent; }
+
+  .ph2 {
+    position: relative; width: 46px; height: 76px;
+    border: 3px solid var(--ink); border-radius: 9px; background: #fff;
+  }
+  .ph2::before {
+    content: ""; display: block; width: 18px; height: 3px;
+    background: var(--ink); border-radius: 2px; margin: 5px auto 8px;
+  }
+  .ph2 .btn {
+    position: absolute; left: 6px; right: 6px; bottom: 7px; height: 22px;
+    background: var(--green); color: #fff; border-radius: 4px;
+    font-size: 11px; font-weight: 700; letter-spacing: 2px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  .d3 { display: flex; align-items: center; gap: 3px; }
+  .bubble {
+    position: relative; background: #f2f3f5; border: 1px solid var(--line);
+    border-radius: 7px; padding: 4px 6px;
+    font-size: 9.5px; color: var(--sub); white-space: nowrap;
+  }
+  .bubble::after {
+    content: ""; position: absolute; right: -4px; top: 7px;
+    border: 3px solid transparent; border-left: 5px solid #f2f3f5;
+  }
+  .up {
+    width: 0; height: 0;
+    border: 5px solid transparent; border-bottom: 8px solid var(--green);
+  }
+  .file {
+    position: relative; width: 20px; height: 26px;
+    background: #fff; border: 2px solid var(--ink); border-radius: 3px;
+  }
+  .file::before {
+    content: ""; position: absolute; top: 0; right: 0;
+    border-top: 7px solid var(--ink); border-left: 7px solid transparent;
+  }
+  .file::after {
+    content: ""; position: absolute; left: 3px; right: 3px; top: 9px; height: 2px;
+    background: var(--ink);
+  }
+
+  /* ---------- 须知 ---------- */
+  .notes {
+    border: 1px solid var(--line); border-radius: 6px;
+    background: #f8f9fa; padding: 3mm 4mm; margin-top: 1mm;
+  }
+  .notes h3 { margin: 0 0 2mm; font-size: 13px; display: flex; align-items: center; gap: 2mm; }
+  .notes h3::before { content: "◆"; color: var(--green); font-size: 9px; }
+  .notes ul {
+    list-style: none; margin: 0; padding: 0;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 1.5mm 3mm;
+  }
+  .notes li { font-size: 11px; color: #3a434b; display: flex; align-items: center; gap: 1.5mm; line-height: 1.4; }
+  .notes li::before { content: "✓"; color: var(--green); font-weight: 800; font-size: 12px; flex-shrink: 0; }
+  .notes li.wide { grid-column: 1 / -1; }
+
+  /* ---------- 隐私公示 ---------- */
+  .privacy {
+    border: 1px solid #b7e3c8; border-left: 5px solid var(--green);
+    background: #e9f7ee; border-radius: 6px;
+    padding: 3mm 4mm; margin-top: 3.5mm;
+  }
+  .privacy h3 {
+    margin: 0 0 1.5mm; font-size: 14px; color: #0a7d3f;
+    display: flex; align-items: center; gap: 2mm;
+  }
+  .shield {
+    position: relative; width: 13px; height: 15px; flex-shrink: 0;
+    background: var(--green); border-radius: 7px 7px 4px 4px;
+  }
+  .shield::before {
+    content: "✓"; position: absolute; inset: 0;
+    color: #fff; font-size: 9px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .privacy p { margin: 0; font-size: 11.5px; line-height: 1.6; color: #1f3b2a; }
+  .privacy p b { color: #0a7d3f; }
+
+  /* ---------- 页脚 ---------- */
+  .footer {
+    margin-top: auto; text-align: center;
+    font-size: 10px; color: #8b949e; padding-top: 2mm;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+  <div class="sheet">
+
+    <header>
+      <div class="kicker">店内自助打印 · 无需加好友</div>
+      <h1>微信扫码 · 自助打印</h1>
+    </header>
+
+    <div class="steps">
+
+      <div class="step">
+        <div class="num">1</div>
+        <div class="txt">
+          <h2>微信扫屏幕二维码</h2>
+          <p>打开微信「扫一扫」，扫描屏幕上方的二维码</p>
+        </div>
+        <div class="dia d1">
+          <div class="phone"></div>
+          <div class="scan"></div>
+          <div class="scr"><div class="qr"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i class="w"></i><i class="w"></i><i></i><i class="w"></i><i></i><i class="w"></i><i class="w"></i><i></i></div></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">2</div>
+        <div class="txt">
+          <h2>手机上点【登录】</h2>
+          <p>确认登录，本机即可接收您发送的文件</p>
+        </div>
+        <div class="dia"><div class="ph2"><div class="btn">登 录</div></div></div>
+      </div>
+
+      <div class="step">
+        <div class="num">3</div>
+        <div class="txt">
+          <h2>微信「文件传输助手」发送文件</h2>
+          <p>找到"文件传输助手"，把要打印的文件发过来</p>
+        </div>
+        <div class="dia d3">
+          <div class="bubble">文件传输助手</div>
+          <div class="up"></div>
+          <div class="file"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="notes">
+      <h3>须知</h3>
+      <ul>
+        <li>单文件不超过 25MB</li>
+        <li>支持 PDF · 图片 · Word · Excel · PPT</li>
+        <li class="wide">发送完成后，请告知店员帮您打印</li>
+      </ul>
+    </div>
+
+    <div class="privacy">
+      <h3><span class="shield"></span>隐私公示</h3>
+      <p>打印完成后，系统将<b>立即退出您的微信登录</b>，并<b>删除本次上传的文件</b>，不保存、不查看、不外传任何资料。</p>
+    </div>
+
+    <div class="footer">如有疑问，请联系店内店员 · 感谢您的使用</div>
+
+  </div>
+</body>
+</html>

@@ -6,7 +6,7 @@
 - 主控/服务：Python + FastAPI + uvicorn，系统托盘（pystray）常驻
 - 打印链路：PyMuPDF 渲染 → XPS 打包 → PowerShell 助手（`printshop/submit_xps.ps1`，
   .NET 互操作，`PrintQueue.CreateXpsDocumentWriter().Write`）→ 打印机
-- 配套：ESP32 小屏固件见 `firmware/`（柜台立牌为后续任务）
+- 配套：ESP32 小屏固件见 `firmware/`；柜台立牌见 `assets/signage.html`
 
 ## 开发环境
 
