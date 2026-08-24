@@ -785,7 +785,7 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 - Modify: `printshop/session_manager.py`（断线重连、凭证恢复、看门狗）、`printshop/main.py`（启动时 `restore_session()`）
 - Test: `printshop/tests/test_recovery.py`
 
-- [ ] **Step 1: 失败测试**：凭证有效时启动恢复免扫码 ✓；`fetch_messages` 抛网络异常时指数退避重试（5s/15s/60s）且状态不变 ✓；连续失败 3 次 → 登出回 IDLE 出新码 ✓
+- [ ] **Step 1: 失败测试**：凭证有效时启动恢复免扫码 ✓；`fetch_messages` 抛网络异常时指数退避重试（5s/15s/60s）且状态不变 ✓；**3 次退避耗尽后下一次连续失败（即第 4 次）→ 登出回 IDLE 出新码**（Ruling R8 裁定：原措辞"连续失败 3 次登出"与三档退避自相矛盾——第 3 次即登出则 60s 档永不达；且顾客发文件途中店内网络抖动 ~20s 即被登出体验过差，完整退避链 ~81s 后登出更合理）✓
 - [ ] **Step 2: 实现**（run_loop 包 try/except，重连计数器；`save_session` 在登录成功与每 10 分钟定时执行）
 - [ ] **Step 3: 测试通过 + Commit** `feat: 断线重连与会话恢复`
 
