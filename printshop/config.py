@@ -17,6 +17,9 @@ class Config:
     qr_expire_seconds: int = 240
     no_file_timeout: int = 300
     poll_interval: float = 1.5
+    network_backoff: tuple = (5, 15, 60)
+    network_max_failures: int = 3
+    session_save_interval: float = 600.0
 
     def ensure_dirs(self) -> None:
         self.inbox_dir.mkdir(exist_ok=True)

@@ -96,6 +96,11 @@ class WeChatClient:
     def is_authed(self) -> bool:
         return bool(self._bot._has_auth())
 
+    async def save_session(self) -> None:
+        """持久化当前登录态到 vendor state.json（登录成功与定时由 SessionManager 调度）。"""
+        await self._ensure_started()
+        await self._bot.save_session()
+
     async def restore_session(self) -> bool:
         await self._ensure_started()
         await self._bot._load_session()

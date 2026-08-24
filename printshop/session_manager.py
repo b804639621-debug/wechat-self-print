@@ -1,13 +1,37 @@
-"""会话状态机：编排微信登录→收文件→打印→收尾全流程，管理小屏亮屏/息屏。"""
+"""会话状态机：编排微信登录→收文件→打印→收尾全流程，管理小屏亮屏/息屏。
+
+含加固与恢复：断线指数退避重连、启动时凭证恢复、run_loop 看门狗、会话定时保存。
+"""
 import asyncio
+import logging
 import time
 from pathlib import Path
 from typing import Callable
 
+import httpx
+
 from printshop.config import Config
 from printshop.print_engine import classify_file
 
+_log = logging.getLogger(__name__)
+
 SCANNED_TIMEOUT_SECONDS = 120
+
+
+def _is_network_error(exc: BaseException) -> bool:
+    """判定异常是否属于网络类故障。
+
+    协议层错误（服务端明确返回错误状态，如 HTTP 400）不算网络故障，
+    按现有错误处理语义（吞掉继续按 poll_interval 轮询）走；传输层/超时/
+    连接类错误才算网络故障，走指数退避重连。
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if isinstance(exc, httpx.RequestError):
+        return True
+    if isinstance(exc, (ConnectionError, asyncio.TimeoutError, OSError)):
+        return True
+    return False
 
 
 class SessionState:
@@ -19,10 +43,13 @@ class SessionState:
 
 
 class SessionManager:
-    def __init__(self, cfg: Config, wx, store):
+    def __init__(self, cfg: Config, wx, store, *,
+                 sleep=asyncio.sleep, max_iterations: int | None = None):
         self._cfg = cfg
         self._wx = wx
         self._store = store
+        self._sleep = sleep
+        self.max_iterations = max_iterations
 
         self.state = SessionState.IDLE
         self.display = False
@@ -38,6 +65,8 @@ class SessionManager:
         self._last_file_ts = time.monotonic()
         self._no_file_reminder = False
         self._seen_msg_ids: set[str] = set()
+        self._reconnect_failures = 0
+        self._last_save_ts = time.monotonic()
 
     def _notify(self) -> None:
         if self.on_change:
@@ -75,6 +104,7 @@ class SessionManager:
             self._last_event_ts = time.monotonic()
             self._last_file_ts = time.monotonic()
             self._transition(SessionState.CONNECTED)
+            await self._save_session()
         elif status == "expired":
             await self._refresh_qr()
 
@@ -208,22 +238,85 @@ class SessionManager:
             self._transition(SessionState.IDLE)
             self._set_display(False)
 
-    async def run_loop(self) -> None:
-        while True:
+    async def _save_session(self) -> None:
+        try:
+            await self._wx.save_session()
+        except Exception:
+            _log.exception("保存微信会话失败（忽略，不影响服务）")
+
+    async def restore_session(self) -> bool:
+        """启动时恢复凭证：有效→直接进服务态（免扫码）；无效/异常→保持 IDLE 正常出码。"""
+        try:
+            ok = await self._wx.restore_session()
+        except Exception:
+            _log.exception("恢复微信会话失败，走正常出码流程")
+            ok = False
+        if ok:
+            self._last_event_ts = time.monotonic()
+            self._last_file_ts = time.monotonic()
+            self._transition(SessionState.CONNECTED)
+            self._set_display(True)
+        return ok
+
+    def _network_backoff_delay(self, n: int) -> float:
+        seq = self._cfg.network_backoff
+        return float(seq[min(n - 1, len(seq) - 1)])
+
+    async def _handle_network_failure(self) -> None:
+        self._reconnect_failures += 1
+        n = self._reconnect_failures
+        if n > self._cfg.network_max_failures:
+            _log.warning("fetch_messages 连续网络失败 %d 次，登出并刷新二维码", n)
+            self._reconnect_failures = 0
+            await self.finish_service()
+            self._set_display(True)
+            await self._refresh_qr()
+            return
+        delay = self._network_backoff_delay(n)
+        _log.warning("fetch_messages 网络异常（第 %d 次），%.0fs 后重试", n, delay)
+        await self._sleep(delay)
+
+    async def _maybe_periodic_save(self) -> None:
+        if self.state not in (SessionState.CONNECTED, SessionState.RECEIVING, SessionState.PRINTING):
+            return
+        if time.monotonic() - self._last_save_ts < self._cfg.session_save_interval:
+            return
+        self._last_save_ts = time.monotonic()
+        await self._save_session()
+
+    async def _run_once(self) -> None:
+        if self.state == SessionState.IDLE:
+            if self.display:
+                self._check_idle_sleep()
+            result = await self._wx.poll_login()
+            await self._handle_poll(result)
+        elif self.state == SessionState.SCANNED:
+            await self._check_scanned_timeout()
+        elif self.state == SessionState.CONNECTED:
             try:
-                if self.state == SessionState.IDLE:
-                    if self.display:
-                        self._check_idle_sleep()
-                    result = await self._wx.poll_login()
-                    await self._handle_poll(result)
-                elif self.state == SessionState.SCANNED:
-                    await self._check_scanned_timeout()
-                elif self.state == SessionState.CONNECTED:
-                    if self.display:
-                        await self._process_messages()
-                    self._check_no_file_timeout()
+                if self.display:
+                    await self._process_messages()
+                self._check_no_file_timeout()
+                self._reconnect_failures = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if _is_network_error(exc):
+                    await self._handle_network_failure()
+                else:
+                    raise
+        await self._maybe_periodic_save()
+
+    async def run_loop(self) -> None:
+        iterations = 0
+        while True:
+            iterations += 1
+            if self.max_iterations is not None and iterations > self.max_iterations:
+                return
+            try:
+                await self._run_once()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
-            await asyncio.sleep(self._cfg.poll_interval)
+                _log.exception("run_loop 迭代异常（看门狗兜底），继续下一轮")
+            await self._sleep(self._cfg.poll_interval)

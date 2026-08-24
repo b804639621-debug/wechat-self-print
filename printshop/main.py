@@ -27,7 +27,7 @@ async def _lifespan(ctx: AppContext):
     loop_task = asyncio.create_task(ctx.sm.run_loop())
     if ctx.wx is not None:
         try:
-            await ctx.wx.restore_session()
+            await ctx.sm.restore_session()
         except Exception:
             pass  # 恢复失败不致命
     try:
