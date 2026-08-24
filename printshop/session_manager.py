@@ -59,6 +59,7 @@ class SessionManager:
         self.qr_content: str | None = None
         self.on_change: Callable[[], None] | None = None
         self.on_note: Callable[[], None] | None = None
+        self.on_admin_notice: Callable[[str, str], None] | None = None
 
         self._note = ""
         self._last_event_ts = time.monotonic()
@@ -226,19 +227,54 @@ class SessionManager:
             "message": self._note,
         }
 
-    def _delete_inbox_files(self) -> None:
-        for p in self._cfg.inbox_dir.glob("*"):
-            if p.is_file():
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
+    def _clean_dir(self, directory: Path | None) -> list[str]:
+        """删除目录下所有文件，返回失败路径列表（不抛异常）。
 
-    async def finish_service(self) -> None:
+        防御：仅清理具名的真实目录，空路径/当前目录直接跳过，避免误删 CWD。
+        """
+        if directory is None:
+            return []
+        directory = Path(directory)
+        if not directory.name or directory in (Path("."), Path("..")):
+            return []
+        if not directory.exists() or not directory.is_dir():
+            return []
+        failed: list[str] = []
+        for p in directory.iterdir():
+            try:
+                if p.is_file():
+                    p.unlink()
+            except Exception as exc:
+                _log.warning("删除文件失败: %s (%s)", p, exc)
+                failed.append(str(p))
+        return failed
+
+    def _trace_dir(self) -> Path | None:
+        """trace 日志目录（登出时清理 PII 残留）；无法解析（mock wx）返回 None。"""
+        td = getattr(self._wx, "trace_dir", None)
+        if td is None:
+            return None
+        try:
+            path = Path(td)
+        except Exception:
+            return None
+        return path if path.name else None
+
+    async def finish_service(self) -> dict:
+        """登出 + 清理（inbox/work/trace 顾客产物）并归档，返回清理结果供界面告警。
+
+        I3：清理失败不静默——收集失败列表、日志记录、通过 on_admin_notice 广播告警。
+        """
+        failures: list[str] = []
         try:
             await self._wx.logout()
+        except Exception:
+            _log.exception("登出微信失败（继续清理本地状态）")
+            failures.append("logout")
         finally:
-            self._delete_inbox_files()
+            failures += self._clean_dir(self._cfg.inbox_dir)
+            failures += self._clean_dir(self._cfg.work_dir)
+            failures += self._clean_dir(self._trace_dir())
             self._store.archive_all()
             self.file_count = 0
             self._note = ""
@@ -249,6 +285,12 @@ class SessionManager:
             self._reconnect_failures = 0
             self._transition(SessionState.IDLE)
             self._set_display(False)
+        result = {"ok": not failures, "failures": failures}
+        if failures:
+            _log.error("服务收尾清理失败：%s", failures)
+            if self.on_admin_notice:
+                self.on_admin_notice("cleanup_failed", "文件清理失败，请手动删除 inbox")
+        return result
 
     async def _logout_to_idle_with_fresh_qr(self) -> None:
         """登出回到 IDLE 并刷新二维码（断线重试耗尽/服务端凭证失效共用）。"""

@@ -85,7 +85,8 @@ async def test_network_failure_backoff_keeps_connected(tmp_path):
 
 @pytest.mark.asyncio
 async def test_backoff_exhausted_logout_fresh_qr(tmp_path):
-    cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
+    cfg = Config(); cfg.poll_interval = 0.001
+    cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
     sm = SessionManager(cfg, MagicMock(), MagicMock(), max_iterations=4)
     sm.display = True
     sm.state = SessionState.CONNECTED
@@ -210,7 +211,8 @@ async def test_run_loop_watchdog_survives_iteration_error(tmp_path):
 
 @pytest.mark.asyncio
 async def test_invalid_session_logs_out_to_idle_fresh_qr(tmp_path):
-    cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
+    cfg = Config(); cfg.poll_interval = 0.001
+    cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
     sm = SessionManager(cfg, MagicMock(), MagicMock(), max_iterations=1)
     sm.display = True
     sm.state = SessionState.CONNECTED
@@ -242,7 +244,7 @@ async def test_empty_fetch_with_valid_session_keeps_connected(tmp_path):
 
 @pytest.mark.asyncio
 async def test_finish_service_resets_reconnect_counter(tmp_path):
-    cfg = Config(); cfg.inbox_dir = tmp_path
+    cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
     sm = _sm(cfg)
     sm._wx.logout = AsyncMock()
     sm.state = SessionState.CONNECTED
@@ -291,7 +293,8 @@ async def test_invalid_session_detected_with_real_is_authed(tmp_path):
     """
     from printshop.wechat_bot import WeChatClient
 
-    cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
+    cfg = Config(); cfg.poll_interval = 0.001
+    cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
     wx = WeChatClient(entry_host="szfilehelper.weixin.qq.com")
     wx._bot = MagicMock()
     wx._bot.is_logged_in = False

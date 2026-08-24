@@ -24,6 +24,14 @@ class WeChatClient:
     def __init__(self, entry_host: str = "szfilehelper.weixin.qq.com"):
         self.entry_host = entry_host
         self._bot = WeChatHelperBot(entry_host=entry_host)
+        # I4：默认关闭 HTTP trace（vendor 默认开）。trace 会把顾客昵称/备注/文件名
+        # 写进 trace_logs/*.jsonl，属 PII；生产需要时用 WECHAT_TRACE_ENABLED 显式开启。
+        self._bot.trace_enabled = False
+
+    @property
+    def trace_dir(self) -> Path:
+        """vendor trace 日志目录（登出清理 PII 用）。"""
+        return Path(self._bot.trace_dir)
 
     async def _ensure_started(self) -> None:
         if self._bot.client is None:
@@ -71,10 +79,35 @@ class WeChatClient:
             except Exception:
                 pass
         self._delete_persisted_session(bot)
+        self._clean_traces(bot)
+        self._clear_message_cache(bot)
         bot.skey = bot.sid = bot.uin = bot.pass_ticket = ""
         bot.user_name = ""
         bot.uuid = ""
         bot.is_logged_in = False
+
+    @staticmethod
+    def _clean_traces(bot) -> None:
+        """清空 trace_logs 目录内容（历史残留 PII，防隐私泄漏）。"""
+        trace_dir = getattr(bot, "trace_dir", None)
+        if trace_dir is None:
+            return
+        try:
+            for p in Path(trace_dir).glob("*"):
+                if p.is_file():
+                    p.unlink()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _clear_message_cache(bot) -> None:
+        """跨顾客会话隔离：登出时清空 vendor 内存消息缓存。
+
+        有 clear_message_cache()（本项目本地新增）则调用；测试 mock bot 无此方法时兜底。
+        """
+        method = getattr(bot, "clear_message_cache", None)
+        if callable(method):
+            method()
 
     @staticmethod
     def _delete_persisted_session(bot) -> None:

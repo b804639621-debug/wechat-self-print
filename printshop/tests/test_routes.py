@@ -347,7 +347,8 @@ def test_service_finish(tmp_path):
     app, ctx = _app(tmp_path)
     ctx.sm.state = SessionState.CONNECTED
     r = TestClient(app).post("/api/service/finish")
-    assert r.json() == {"ok": True}
+    assert r.json()["ok"] is True
+    assert r.json()["failures"] == []
     ctx.wx.logout.assert_awaited_once()
     ctx.store.archive_all.assert_called_once()
     assert ctx.sm.state == SessionState.IDLE

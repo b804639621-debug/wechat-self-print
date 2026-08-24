@@ -1,6 +1,7 @@
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -39,7 +40,7 @@ async def test_idle_sleep_after_timeout():
 
 @pytest.mark.asyncio
 async def test_finish_service_cleans_up(tmp_path):
-    cfg = Config(); cfg.inbox_dir = tmp_path
+    cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
     f = tmp_path / "a.pdf"; f.write_bytes(b"x")
     sm = SessionManager(cfg, MagicMock(), MagicMock())
     sm._wx.logout = AsyncMock()
@@ -340,7 +341,7 @@ def test_screen_state_message_reflects_note():
 
 @pytest.mark.asyncio
 async def test_finish_service_archives_jobs(tmp_path):
-    cfg = Config(); cfg.inbox_dir = tmp_path
+    cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
     store = MagicMock()
     sm = SessionManager(cfg, MagicMock(), store)
     sm._wx.logout = AsyncMock()
@@ -351,7 +352,7 @@ async def test_finish_service_archives_jobs(tmp_path):
 
 @pytest.mark.asyncio
 async def test_finish_service_order_logout_then_delete_then_archive(tmp_path):
-    cfg = Config(); cfg.inbox_dir = tmp_path
+    cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
     f = tmp_path / "a.pdf"; f.write_bytes(b"x")
     events = []
     store = MagicMock()
@@ -376,7 +377,7 @@ async def test_finish_service_order_logout_then_delete_then_archive(tmp_path):
 
 @pytest.mark.asyncio
 async def test_finish_service_clears_note(tmp_path):
-    cfg = Config(); cfg.inbox_dir = tmp_path
+    cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
     sm = SessionManager(cfg, MagicMock(), MagicMock())
     sm._wx.logout = AsyncMock()
     sm.state = SessionState.CONNECTED
@@ -427,3 +428,40 @@ async def test_run_loop_scanned_expired_returns_idle_fresh_qr(tmp_path):
     assert sm.state == SessionState.IDLE
     assert sm.qr_content.endswith("/l/new")
     sm._wx.get_qr.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_finish_service_cleans_work_dir(tmp_path):
+    """C2：finish_service 必须清理 work_dir 中间产物（顾客文件全量副本残留）。"""
+    cfg = Config()
+    cfg.inbox_dir = tmp_path / "inbox"; cfg.work_dir = tmp_path / "work"
+    cfg.inbox_dir.mkdir(parents=True, exist_ok=True)
+    cfg.work_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.inbox_dir / "a.pdf").write_bytes(b"x")
+    (cfg.work_dir / "job_1.pdf").write_bytes(b"%PDF")
+    (cfg.work_dir / "x1.xps").write_bytes(b"x")
+    sm = SessionManager(cfg, MagicMock(), MagicMock())
+    sm._wx.logout = AsyncMock()
+    sm.state = SessionState.CONNECTED
+    await sm.finish_service()
+    assert not (cfg.inbox_dir / "a.pdf").exists()
+    assert list(cfg.work_dir.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_finish_service_reports_cleanup_failure(tmp_path):
+    """I3：清理失败不静默——收集失败列表、返回结果、广播告警。"""
+    cfg = Config()
+    cfg.inbox_dir = tmp_path / "inbox"; cfg.work_dir = tmp_path / "work"
+    cfg.inbox_dir.mkdir(parents=True, exist_ok=True)
+    cfg.work_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.inbox_dir / "a.pdf").write_bytes(b"x")
+    sm = SessionManager(cfg, MagicMock(), MagicMock())
+    sm._wx.logout = AsyncMock()
+    notices = []
+    sm.on_admin_notice = lambda kind, text: notices.append((kind, text))
+    with patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+        result = await sm.finish_service()
+    assert result["ok"] is False
+    assert "a.pdf" in str(result["failures"])
+    assert notices == [("cleanup_failed", "文件清理失败，请手动删除 inbox")]

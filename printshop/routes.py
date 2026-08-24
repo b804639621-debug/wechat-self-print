@@ -288,8 +288,7 @@ def build_router(ctx: AppContext) -> APIRouter:
 
     @router.post("/api/service/finish")
     async def service_finish():
-        await sm.finish_service()
-        return {"ok": True}
+        return await sm.finish_service()
 
     @router.websocket("/ws/admin")
     async def ws_admin(ws: WebSocket):

@@ -189,3 +189,56 @@ def test_qr_content_template_matches_m1_verified_format():
     assert QR_CONTENT_TEMPLATE == "https://login.weixin.qq.com/l/{uuid}"
     assert QR_CONTENT_TEMPLATE.format(uuid="obyDMELwoQ==") == \
         "https://login.weixin.qq.com/l/obyDMELwoQ=="
+
+
+def test_wechat_client_trace_disabled_by_default():
+    c = WeChatClient(entry_host="szfilehelper.weixin.qq.com")
+    assert c._bot.trace_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_logout_cleans_trace_dir(tmp_path):
+    c = _client()
+    trace_dir = tmp_path / "trace_logs"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    (trace_dir / "wechat_http_trace.jsonl").write_text(
+        '{"url":"https://x/","body":"nickname"}', encoding="utf-8")
+    c._bot.trace_dir = trace_dir
+    c._bot.client = AsyncMock()
+    c._bot.client.post = AsyncMock(return_value=MagicMock())
+    c._bot.entry_host = "szfilehelper.weixin.qq.com"
+    c._bot.state_path = tmp_path / "state.json"
+    c._bot.skey = "SK"; c._bot.sid = "SI"; c._bot.uin = "U"; c._bot.pass_ticket = "PT"
+    c._bot.is_logged_in = True
+
+    await c.logout()
+
+    assert list(trace_dir.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_logout_clears_vendor_message_cache(tmp_path):
+    """C3 跨顾客会话隔离：A 会话消息缓存必须随登出清空，B 会话 fetch 不得再见 A 的 msg_id。"""
+    from printshop.vendor.direct_bot import WeChatHelperBot
+
+    bot = WeChatHelperBot(entry_host="szfilehelper.weixin.qq.com")
+    bot.client = AsyncMock()
+    bot.client.post = AsyncMock(return_value=MagicMock())
+    bot.state_path = tmp_path / "state.json"
+    bot.trace_dir = tmp_path / "trace_logs"
+    bot.skey = "SK"; bot.sid = "SI"; bot.uin = "U"; bot.pass_ticket = "PT"
+    bot.is_logged_in = True
+    bot._seen_msg_ids.add("A1")
+    bot._msg_cache.append({"id": "A1", "type": "file", "file_name": "a.pdf", "is_mine": False})
+    bot._raw_by_id["A1"] = {"MsgId": "A1"}
+    bot._send_msg_ids.add("A2")
+    c = WeChatClient(entry_host="szfilehelper.weixin.qq.com")
+    c._bot = bot
+
+    await c.logout()
+
+    assert not bot._seen_msg_ids
+    assert not bot._msg_cache
+    assert not bot._raw_by_id
+    assert not bot._send_msg_ids
+    assert await bot.get_latest_messages() == []

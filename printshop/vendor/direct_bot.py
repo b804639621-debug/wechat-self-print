@@ -1,4 +1,8 @@
 # vendored from https://github.com/CJackHwang/wx-filehelper-api (MIT License)
+#
+# === 本项目本地修改（跨顾客会话隔离）===
+# - 新增 WeChatHelperBot.clear_message_cache()：清空内存消息缓存，供登出时调用，
+#   防止下个顾客拉到上个顾客的缓存消息（见 wechat_bot.py WeChatClient.logout）。
 
 import asyncio
 from collections import deque
@@ -210,6 +214,20 @@ class WeChatHelperBot:
                 )
             except Exception:
                 continue
+
+    def clear_message_cache(self) -> None:
+        """本项目本地修改：清空内存消息缓存（跨顾客会话隔离）。
+
+        登出时调用，防止下个顾客的会话拉到上个顾客缓存的消息
+        （_msg_cache/_raw_by_id/_seen_msg_ids/_send_msg_ids）。
+        """
+        self._msg_cache.clear()
+        self._raw_by_id.clear()
+        self._raw_by_id_order.clear()
+        self._seen_msg_ids.clear()
+        self._seen_msg_ids_order.clear()
+        self._send_msg_ids.clear()
+        self._send_msg_ids_order.clear()
 
     async def get_login_qr(self, skip_login_check: bool = False) -> bytes:
         """

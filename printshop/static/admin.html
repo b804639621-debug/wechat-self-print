@@ -37,6 +37,16 @@
   #note-clear { background: #fff3cd; border: 1px solid #f0c36d; color: #8a5300;
                 border-radius: 6px; padding: 6px 14px; cursor: pointer; }
 
+  #reminder-bar { display: none; align-items: center; gap: 12px; background: #fff8e1;
+                  border-bottom: 1px solid #f0c36d; padding: 10px 16px; }
+  #reminder-bar.show { display: flex; }
+  #reminder-bar .label { color: #b26a00; font-weight: 600; white-space: nowrap; }
+
+  #cleanup-alert { display: none; align-items: center; gap: 12px; background: #c62828;
+                   color: #fff; border-bottom: 1px solid #b71c1c; padding: 10px 16px; }
+  #cleanup-alert.show { display: flex; }
+  #cleanup-alert .label { font-weight: 600; white-space: nowrap; }
+
   #main { display: flex; gap: 12px; padding: 12px; height: calc(100vh - 120px);
           min-height: 480px; }
   .panel { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
@@ -151,6 +161,17 @@
     <span id="note-label">📝 顾客备注：</span>
     <span id="note-text"></span>
     <button id="note-clear">清除</button>
+  </div>
+
+  <div id="reminder-bar">
+    <span class="label">⏰ 5 分钟未收到文件</span>
+    <span>顾客可能已断开或未发送文件，请确认</span>
+  </div>
+
+  <div id="cleanup-alert">
+    <span class="label">⚠ 文件清理失败</span>
+    <span>请手动删除 inbox 与 work 目录下的顾客文件后重启服务（隐私红线）</span>
+    <button id="cleanup-alert-dismiss">知道了</button>
   </div>
 
   <div id="main">
@@ -386,12 +407,21 @@
     el.className = "s-" + st.toLowerCase();
     $("session-screen").textContent = (data.display === "on") ? "屏幕:开" : "屏幕:关";
     $("session-count").textContent = "已接收 " + (data.file_count || 0) + " 个文件";
+    $("reminder-bar").classList.toggle("show", !!data.no_file_reminder);
   }
 
   function showNote(text) {
     if (!text) { $("note-bar").classList.remove("show"); return; }
     $("note-text").textContent = text;
     $("note-bar").classList.add("show");
+  }
+
+  function showCleanupAlert(text) {
+    $("cleanup-alert").classList.add("show");
+    if (text) {
+      var span = $("cleanup-alert").querySelector("span:last-of-type");
+      if (span) span.textContent = text;
+    }
   }
 
   function renderJobs() {
@@ -713,6 +743,10 @@
         }
       } else if (d.type === "note") {
         showNote(d.text || "");
+      } else if (d.type === "cleanup_failed") {
+        showCleanupAlert(d.text || "文件清理失败，请手动删除 inbox");
+      } else if (d.type === "reminder") {
+        $("reminder-bar").classList.add("show");
       }
     };
     ws.onclose = function () {
@@ -851,7 +885,12 @@
 
     $("finish-btn").addEventListener("click", function () {
       if (!confirm("确定完成服务？将登出顾客微信、清空收件箱并归档所有任务。")) return;
-      api("/api/service/finish", { method: "POST" }).then(function () {
+      api("/api/service/finish", { method: "POST" }).then(function (res) {
+        if (res && res.ok === false) {
+          showCleanupAlert(res.error || "文件清理失败，请手动删除 inbox");
+          toast("完成服务：部分清理失败，请手动删除 inbox/work", "error");
+          return;
+        }
         toast("服务已完成，收件箱已清空", "success");
         S.jobs = [];
         S.jobsById = {};
@@ -862,6 +901,10 @@
       }).catch(function (err) {
         toast("完成服务失败：" + err.message, "error");
       });
+    });
+
+    $("cleanup-alert-dismiss").addEventListener("click", function () {
+      $("cleanup-alert").classList.remove("show");
     });
 
     $("note-clear").addEventListener("click", function () {
