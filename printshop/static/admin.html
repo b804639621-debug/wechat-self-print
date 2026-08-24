@@ -213,7 +213,7 @@
       </div>
       <div class="field">
         <label>份数</label>
-        <input type="number" id="copies" min="1" value="1">
+        <input type="number" id="copies" min="1" max="99" value="1">
       </div>
       <div class="field">
         <label>页码（留空为全部，如 1-3,5）</label>
@@ -887,8 +887,11 @@
       if (!confirm("确定完成服务？将登出顾客微信、清空收件箱并归档所有任务。")) return;
       api("/api/service/finish", { method: "POST" }).then(function (res) {
         if (res && res.ok === false) {
-          showCleanupAlert(res.error || "文件清理失败，请手动删除 inbox");
-          toast("完成服务：部分清理失败，请手动删除 inbox/work", "error");
+          // 响应字段为 failures 数组（清理失败文件清单），非 error
+          var n = (res.failures || []).length;
+          var detail = "有 " + n + " 个文件清理失败，请手动检查 inbox 与 work 目录（隐私红线）";
+          showCleanupAlert(detail);
+          toast("完成服务：" + detail, "error");
           return;
         }
         toast("服务已完成，收件箱已清空", "success");

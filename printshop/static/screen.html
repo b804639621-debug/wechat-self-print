@@ -60,6 +60,9 @@
     }
 
     function connectWS() {
+      // 注意：/ws/admin 仅允许本机（回环）连接（见 routes.ws_admin 的 _ws_loopback_guard）。
+      // 本页从 LAN 打开时 WS 会被拒（close 1008），此时退化为"初始 fetchState + 手动刷新"，
+      // 失去实时推送——调试页主要在本机使用，可接受；ESP32 固件为纯 HTTP 轮询，不受影响。
       var proto = location.protocol === "https:" ? "wss" : "ws";
       var ws = new WebSocket(proto + "://" + location.host + "/ws/admin");
       var el = document.getElementById("ws-status");

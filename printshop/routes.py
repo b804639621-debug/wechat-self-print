@@ -6,6 +6,7 @@
 且工作线程内不触碰 JobStore：先取数、打印、回事件循环后再 set_status。
 """
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -29,6 +30,34 @@ from printshop.print_engine import (
 from printshop.session_manager import SessionState
 
 _log = logging.getLogger(__name__)
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    """判定客户端 host 是否本机回环（含 TestClient 的 'testclient'）。
+
+    供 main.py HTTP 中间件与 ws_admin WS 握手共用：管理端点/WS 仅允许本机。
+    """
+    if not host:
+        return True
+    if host in ("localhost", "testclient"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True  # 无法解析的 host（如自定义 test client）视为本机
+
+
+async def _ws_loopback_guard(ws: WebSocket) -> bool:
+    """WS 握手 host 校验：非回环直接 close(1008) 拒绝，返回 True=放行。
+
+    Starlette 的 HTTP 中间件不会拦截 websocket scope，必须在端点内把关。
+    拒绝发生在 accept 之前（ASGI 规范允许先发 close），uvicorn 会回 HTTP 403。
+    """
+    host = ws.client.host if ws.client else None
+    if not _is_loopback_host(host):
+        await ws.close(code=1008)
+        return False
+    return True
 
 
 class PrintOptionsBody(BaseModel):
@@ -314,6 +343,10 @@ def build_router(ctx: AppContext) -> APIRouter:
 
     @router.websocket("/ws/admin")
     async def ws_admin(ws: WebSocket):
+        # 回环校验必须在端点内（HTTP 中间件不拦 websocket scope）——LAN 设备连 /ws/admin
+        # 会持续收到顾客文件名/备注/二维码广播，属 PII 泄漏面。
+        if not await _ws_loopback_guard(ws):
+            return
         await ws.accept()
         ctx.clients.add(ws)
         try:

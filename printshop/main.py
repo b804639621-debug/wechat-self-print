@@ -6,7 +6,6 @@ PyInstaller 冻结态：chdir 到 exe 同级目录，使 Config 的相对路径�
 """
 import asyncio
 import contextlib
-import ipaddress
 import logging
 import os
 import sys
@@ -19,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 
 from printshop.config import Config
 from printshop.jobs import JobStore
-from printshop.routes import AppContext, build_router
+from printshop.routes import AppContext, _is_loopback_host, build_router
 from printshop.session_manager import SessionManager, SessionState
 from printshop.tray import start_tray
 from printshop.wechat_bot import WeChatClient
@@ -33,19 +32,10 @@ STATIC_DIR = (Path(sys._MEIPASS) / "printshop" / "static"
 _SERVICE_STATES = (SessionState.SCANNED, SessionState.CONNECTED,
                    SessionState.RECEIVING, SessionState.PRINTING)
 
-# I8：开放 LAN 的白名单前缀（ESP32 小屏 + 调试页 + 静态资源），其余管理端点仅本机
-_PUBLIC_PREFIXES = ("/screen", "/api/screen", "/ws", "/static")
-
-
-def _is_loopback_host(host: str | None) -> bool:
-    if not host:
-        return True
-    if host in ("localhost", "testclient"):
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return True  # 无法解析的 host（如自定义 test client）视为本机
+# I8：开放 LAN 的 HTTP 白名单前缀（ESP32 小屏 + 调试页 + 静态资源）。
+# 注意：/ws 不在其中——HTTP 中间件本就不拦截 websocket scope（无效果的死配置），
+# WS 连接由 routes.ws_admin 端点内的 _ws_loopback_guard 单独把关。
+_PUBLIC_PREFIXES = ("/screen", "/api/screen", "/static")
 
 
 def _is_admin_path(path: str) -> bool:

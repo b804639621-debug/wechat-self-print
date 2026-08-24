@@ -24,8 +24,10 @@ class WeChatClient:
     def __init__(self, entry_host: str = "szfilehelper.weixin.qq.com"):
         self.entry_host = entry_host
         self._bot = WeChatHelperBot(entry_host=entry_host)
-        # I4：默认关闭 HTTP trace（vendor 默认开）。trace 会把顾客昵称/备注/文件名
-        # 写进 trace_logs/*.jsonl，属 PII；生产需要时用 WECHAT_TRACE_ENABLED 显式开启。
+        # I4：本项目强制默认关闭 HTTP trace（vendor 默认开）。trace 会把顾客昵称/备注/
+        # 文件名写进 trace_logs/*.jsonl，属 PII。此处无条件置 False——vendor 读环境变量的
+        # 开关在此被覆盖，如需启用请改此行为显式读取环境变量（如 WECHAT_TRACE_ENABLED），
+        # 且 logout 已配套清理 trace_logs 目录。
         self._bot.trace_enabled = False
 
     @property

@@ -18,6 +18,10 @@ def _recorder(store):
     return record
 
 
+async def _noop_receive():
+    return {"type": "websocket.receive", "bytes": None, "text": None}
+
+
 def _sm(cfg=None, store=None, **kw):
     cfg = cfg or Config()
     return SessionManager(cfg, MagicMock(), store or MagicMock(), **kw)
@@ -400,6 +404,64 @@ def test_loopback_guard_helpers():
     assert _is_admin_path("/api/service/finish") is True
     assert _is_admin_path("/api/screen/state") is False
     assert _is_admin_path("/api/screen/wake") is False
-    assert _is_admin_path("/ws/admin") is False
     assert _is_admin_path("/screen") is False
     assert _is_admin_path("/static/admin.html") is False
+
+
+@pytest.mark.asyncio
+async def test_ws_loopback_guard_rejects_non_loopback():
+    """阻塞项：WS 握手非回环 host → close(1008) 拒绝，不进入广播集。"""
+    from printshop.routes import _ws_loopback_guard
+
+    ws = MagicMock()
+    ws.client.host = "192.168.1.50"
+    ws.close = AsyncMock()
+    assert await _ws_loopback_guard(ws) is False
+    ws.close.assert_awaited_once_with(code=1008)
+
+
+@pytest.mark.asyncio
+async def test_ws_loopback_guard_allows_loopback():
+    from printshop.routes import _ws_loopback_guard
+
+    for host in ("127.0.0.1", "::1", "localhost", "testclient", None):
+        ws = MagicMock()
+        ws.client.host = host
+        ws.close = AsyncMock()
+        assert await _ws_loopback_guard(ws) is True
+        ws.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ws_admin_rejects_non_loopback_handshake(tmp_path):
+    """阻塞项集成：非回环 client 连 /ws/admin，ASGI 层仅收到 close(1008)、无 accept。"""
+    from printshop.main import create_app
+
+    cfg = Config()
+    cfg.inbox_dir = tmp_path / "inbox"; cfg.work_dir = tmp_path / "work"
+    cfg.db_path = tmp_path / "t.db"
+    app = create_app(cfg=cfg, store=MagicMock(), wx=AsyncMock())
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "scheme": "ws",
+        "server": ("testserver", 80),
+        "client": ("192.168.1.50", 50000),
+        "root_path": "",
+        "path": "/ws/admin",
+        "raw_path": b"/ws/admin",
+        "query_string": b"",
+        "headers": [],
+        "subprotocols": [],
+        "state": {},
+    }
+    await app(scope, lambda: _noop_receive(), send)
+    close_msgs = [m for m in sent if m["type"] == "websocket.close"]
+    assert close_msgs and close_msgs[0].get("code") == 1008
+    assert not any(m["type"] == "websocket.accept" for m in sent)
