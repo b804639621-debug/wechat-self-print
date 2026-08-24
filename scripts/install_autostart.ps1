@@ -40,6 +40,10 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
     Write-Error "找不到 exe：$ExePath（可用 -ExePath 指定）"
     exit 1
 }
+if ($ExePath -notlike "*.exe") {
+    Write-Error "ExePath 必须指向 .exe 文件（而非目录）：$ExePath"
+    exit 1
+}
 
 if (-not (Test-Path $RunKey)) {
     New-Item -Path $RunKey -Force | Out-Null

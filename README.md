@@ -6,7 +6,7 @@
 - 主控/服务：Python + FastAPI + uvicorn，系统托盘（pystray）常驻
 - 打印链路：PyMuPDF 渲染 → XPS 打包 → PowerShell 助手（`printshop/submit_xps.ps1`，
   .NET 互操作，`PrintQueue.CreateXpsDocumentWriter().Write`）→ 打印机
-- 配套：ESP32 小屏固件见 `firmware/`，柜台立牌见 `assets/signage.html`
+- 配套：ESP32 小屏固件见 `firmware/`（柜台立牌为后续任务）
 
 ## 开发环境
 
@@ -69,8 +69,11 @@ Windows 自动登录，开机即进桌面拉起服务。
 printshop/         服务源码（FastAPI + 状态机 + XPS 打印引擎）
 printshop/static/  admin.html（管理页）、screen.html（主屏页）
 printshop/tests/   单测（178 例）
-printshop/spec      打包配置
-scripts/           开机自启安装脚本
-tools/             SumatraPDF（备用）、PoC
+printshop.spec     打包配置（PyInstaller）
+scripts/           开机自启安装脚本、dist 冒烟测试
+tools/             SumatraPDF（备用调试）、PoC
 firmware/          ESP32 小屏固件
 ```
+
+> ⚠️ **退役/换机注意**：顾客数据（inbox/work/printshop.db、vendor 的 state.json/trace_logs）
+> 都落在 exe 同级目录。替换 exe 不会带走它们；设备退役或移交前须**整目录删除**（隐私红线）。
