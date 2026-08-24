@@ -400,3 +400,30 @@ async def test_run_loop_polls_login_in_idle():
     except asyncio.CancelledError:
         pass
     assert sm._wx.poll_login.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_run_loop_scanned_then_confirmed_reaches_connected(tmp_path):
+    """C1 主流程：SCANNED 分支必须继续轮询登录，confirmed 才能被检测到。"""
+    cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
+    sm = SessionManager(cfg, MagicMock(), MagicMock(), max_iterations=2)
+    sm.display = True
+    sm._wx.poll_login = AsyncMock(side_effect=["scanned", "confirmed"])
+    sm._wx.save_session = AsyncMock(return_value=True)
+    await sm.run_loop()
+    assert sm.state == SessionState.CONNECTED
+    assert sm._wx.poll_login.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_run_loop_scanned_expired_returns_idle_fresh_qr(tmp_path):
+    """C1：SCANNED 下轮询到 expired → 回 IDLE 出新码（保留 _check_scanned_timeout 兜底）。"""
+    cfg = Config(); cfg.poll_interval = 0.001; cfg.inbox_dir = tmp_path
+    sm = SessionManager(cfg, MagicMock(), MagicMock(), max_iterations=2)
+    sm.display = True
+    sm._wx.poll_login = AsyncMock(side_effect=["scanned", "expired"])
+    sm._wx.get_qr = AsyncMock(return_value=(b"P", "https://login.weixin.qq.com/l/new"))
+    await sm.run_loop()
+    assert sm.state == SessionState.IDLE
+    assert sm.qr_content.endswith("/l/new")
+    sm._wx.get_qr.assert_awaited_once()

@@ -95,7 +95,7 @@ class SessionManager:
         await self._refresh_qr()
 
     async def _handle_poll(self, status: str) -> None:
-        if self.state != SessionState.IDLE:
+        if self.state not in (SessionState.IDLE, SessionState.SCANNED):
             return
         if status == "scanned":
             self._scanned_ts = time.monotonic()
@@ -110,6 +110,8 @@ class SessionManager:
             # （direct_bot.py:324 仅在 check_login_status 路径生效），故必须显式保存。
             await self._save_session()
         elif status == "expired":
+            if self.state == SessionState.SCANNED:
+                self._transition(SessionState.IDLE)
             await self._refresh_qr()
 
     def _check_idle_sleep(self) -> None:
@@ -308,6 +310,10 @@ class SessionManager:
             await self._handle_poll(result)
         elif self.state == SessionState.SCANNED:
             await self._check_scanned_timeout()
+            if self.state == SessionState.SCANNED:
+                # C1：SCANNED 必须继续轮询，否则顾客点【登录】永远检测不到
+                result = await self._wx.poll_login()
+                await self._handle_poll(result)
         elif self.state == SessionState.CONNECTED:
             try:
                 if self.display:
