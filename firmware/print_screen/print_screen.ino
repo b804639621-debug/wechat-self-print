@@ -35,14 +35,14 @@
 #define POLL_BACKOFF_MS  5000                /* 主控不可达退避重试间隔 */
 #define HTTP_TIMEOUT_MS  2500                /* HTTP 连接/读取超时 */
 #define QR_SCALE         9                   /* 二维码放大倍数（480/29≈16，留边距取 9） */
-#define QR_MIN_VERSION   3
-#define QR_MAX_VERSION   7                   /* v7=45 模块*9=405px，可留页脚，容量 105 字节足够 */
+#define QR_MAX_VERSION   7                   /* 固定 v7：45 模块*9=405px 可留页脚；v7-ECC_MEDIUM 容量 122B 足够 */
 #define QR_MAX_MODULES   (QR_MAX_VERSION * 4 + 17)
 #define PIXEL_SHIFT_MS   (60UL * 1000)       /* 烧屏防护#4：定时微移刷新 */
 #define IDLE_SLEEP_MS    (360UL * 1000)      /* 烧屏防护#3 本地兜底：6 分钟（主控 3 分钟先熄） */
 #define QR_MAX_BOTTOM    456                 /* 二维码下沿上限（页脚在 460） */
 #define FOOTER_Y         460                 /* 页脚“微信扫码·传文件打印” */
 #define TEXT_Y           232                 /* 单行状态文字垂直居中位置 */
+#define MAINT_SHIFT_MS   (30UL * 1000)       /* 维护态白字防烧屏：每 30s 换一次绘制位置 */
 
 /* ============================ 全局状态 ============================ */
 I2cMasterBus I2cMasterBus_(GPIO_NUM_7, GPIO_NUM_8, I2C_NUM_0); /* 引脚见 user_config.h */
@@ -181,6 +181,9 @@ void pollScreen(void) {
 void onServerDown(void) {
   failCount++;
   if (failCount == 1) Serial.println("[http] 主控不可达，退避重试...");
+  /* 清掉已绘状态，主控恢复后首次 pollScreen 强制重绘（否则 needRedraw 恒假，滞留维护画面） */
+  qrShown = "";
+  lastStatusKey = "";
   doScreenOn();                /* 熄屏时也要亮屏提示“系统维护中”（黑底白字，防烧屏） */
   if (everConnected) {
     showMaintenance("系统维护中");
@@ -195,14 +198,13 @@ void onServerDown(void) {
 void drawQR(const String& content, bool dim) {
   uint8_t qrcodeData[qrcode_getBufferSize(QR_MAX_VERSION)];
   QRCode qrc;
-  bool ok = false;
-  for (int v = QR_MIN_VERSION; v <= QR_MAX_VERSION; v++) {
-    if (qrcode_initText(&qrc, qrcodeData, v, ECC_MEDIUM, content.c_str()) == 0) {
-      ok = true;
-      break;
-    }
+  /* 固定 v7 + ECC_MEDIUM（容量 122B，微信登录 URL 约 48 字符足够）。
+   * 注意：上游 ricmoo 库 qrcode_initText 内部不做容量检查、超长也恒返回 0，
+   * 因此“逐版本尝试、失败降级”的写法会让内容被 v3 截断成损坏二维码，已废弃。 */
+  if (qrcode_initText(&qrc, qrcodeData, QR_MAX_VERSION, ECC_MEDIUM, content.c_str()) != 0) {
+    showStatusText("二维码生成失败");
+    return;
   }
-  if (!ok) { showStatusText("二维码生成失败"); return; }
 
   int size = qrc.size * QR_SCALE;
   /* 烧屏防护#1：绘制起点随机偏移 ±10px（同时约束静区/边界不出屏） */
@@ -232,17 +234,19 @@ void drawQR(const String& content, bool dim) {
 /* 服务中状态画面（状态文案见需求 spec §6.1 表） */
 void showStatus(const char* state, int fileCount, const String& qr) {
   if (strcmp(state, "SCANNED") == 0) {
-    drawQR(qr, true);                       /* 二维码变暗 + 页脚保持 */
+    drawQR(qr, true);   /* 二维码变暗 */
+    /* 确认引导文案渲染在页脚位置（覆盖二维码页脚，覆盖区同为 16px 高） */
+    lcd_draw_text_center(FOOTER_Y, "请在手机上确认登录", LCD_COLOR_BLACK, LCD_COLOR_WHITE);
   } else if (strcmp(state, "CONNECTED") == 0) {
     showStatusText("已连接，请发送文件");
   } else if (strcmp(state, "RECEIVING") == 0) {
     char buf[40];
-    snprintf(buf, sizeof(buf), "已接收 %d 个文件，请稍后", fileCount);
+    snprintf(buf, sizeof(buf), "已收到 %d 个文件，请稍候", fileCount);
     showStatusText(buf);
   } else if (strcmp(state, "PRINTING") == 0) {
-    showStatusText("打印中，请稍后");
+    showStatusText("打印中，请稍候");
   } else {
-    showStatusText("服务中，请稍后");
+    showStatusText("服务中，请稍候");
   }
 }
 
@@ -258,10 +262,21 @@ void showTextOnBlack(const char* s) {
 }
 
 void showMaintenance(const char* s) {
-  static int8_t jitter = 0;
-  jitter = (int8_t)(-jitter);               /* 每次重绘 ±6px 交替，避免白字静态烧屏 */
+  static String lastText = "";
+  static int8_t lastJitter = 6;   /* 上次实际绘制的偏移 */
+  static int8_t jitter = 6;
+  static unsigned long lastFlip = 0;
+
+  unsigned long now = millis();
+  if (now - lastFlip >= MAINT_SHIFT_MS) {  /* 每 30s 换一次绘制位置（防白字静态烧屏） */
+    lastFlip = now;
+    jitter = (int8_t)(-jitter);            /* ±6px 交替（初值 6，避免 0 恒 0） */
+  }
+  if (String(s) == lastText && jitter == lastJitter) return;  /* 文案/位置未变 → 不重绘 */
+  lastText = s;
+  lastJitter = jitter;
   lcd_clear(LCD_COLOR_BLACK);
-  lcd_draw_text_center(TEXT_Y + jitter * 6, s, LCD_COLOR_WHITE, LCD_COLOR_BLACK);
+  lcd_draw_text_center(TEXT_Y + jitter, s, LCD_COLOR_WHITE, LCD_COLOR_BLACK);
 }
 
 /* ============================ 亮/熄屏 ============================ */

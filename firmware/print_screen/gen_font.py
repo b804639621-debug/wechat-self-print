@@ -33,9 +33,9 @@ add("连接中...")                      # WiFi 已连、主控未连通
 add("系统维护中")                     # 主控不可达（曾连通后断连）
 add("请在手机上确认登录")             # SCANNED
 add("已连接，请发送文件")             # CONNECTED
-add("已接收 N 个文件，请稍后")        # RECEIVING（N 为数字）
-add("打印中，请稍后")                 # PRINTING
-add("服务中，请稍后")                 # 未知状态兜底
+add("已收到 N 个文件，请稍候")        # RECEIVING（N 为数字）
+add("打印中，请稍候")                 # PRINTING
+add("服务中，请稍候")                 # 未知状态兜底
 add("二维码生成失败")                 # 二维码生成异常兜底
 # ---- ASCII 可打印字符全量（0x20 ~ 0x7E） ----
 for cp in range(0x20, 0x7F):

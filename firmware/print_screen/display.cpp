@@ -24,6 +24,13 @@ static uint16_t* rowbuf = NULL;                    /* DMA 行缓冲 */
 /* 绘图行缓冲：480 x 32 行，文本/填充/点阵共用 */
 #define STRIP_H 32
 
+/* 面板为 RGB565，期望像素按“高字节在前”传输（例程 bsp_lvgl_port.cpp 的
+ * lv_draw_sw_rgb565_swap 即为同义交换）。本机小端内存直接写 uint16_t 需手动
+ * 交换字节，否则灰色等非对称颜色会偏色（黑/白字节对称，不受影响）。 */
+static inline uint16_t lcd_px(uint16_t c) {
+  return (uint16_t)((c >> 8) | (c << 8));
+}
+
 /* 显示初始化命令表：原样取自微雪 09_LVGL_V9_Test/bsp_lvgl_port.cpp */
 static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
   { 0x11, (uint8_t[]){ 0x00 }, 0, 600 },
@@ -115,7 +122,7 @@ void lcd_fill_rect(int x0, int y0, int x1, int y1, uint16_t color) {
     int h = STRIP_H;
     if (y + h - 1 > y1) h = y1 - y + 1;
     int n = width * h;
-    for (int i = 0; i < n; i++) rowbuf[i] = color;
+    for (int i = 0; i < n; i++) rowbuf[i] = lcd_px(color);
     esp_lcd_panel_draw_bitmap(panel, x0, y, x1 + 1, y + h, rowbuf);
     y += h;
   }
@@ -140,7 +147,7 @@ void lcd_draw_mono_scaled(int ox, int oy, int w, int h, int scale,
     for (int c = 0; c < dst_w; c++) {
       int mc = c / scale;
       uint8_t bit = (rowb[mc >> 3] >> (mc & 7)) & 1;
-      rowbuf[c] = bit ? fg : bg;
+      rowbuf[c] = lcd_px(bit ? fg : bg);
     }
     esp_lcd_panel_draw_bitmap(panel, ox, yy, ox + dst_w, yy + 1, rowbuf);
   }
@@ -188,7 +195,7 @@ void lcd_draw_text(int x, int y, const char* s, uint16_t fg, uint16_t bg) {
       if (g) bits = ((int)g->bmp[r * 2] << 8) | g->bmp[r * 2 + 1];
       else   bits = 0xFFFF;   /* 未收录字形：全填方块兜底 */
       for (int c = 0; c < 16 && cx + c < LCD_W; c++) {
-        if (bits & (0x8000 >> c)) rowbuf[r * LCD_W + cx + c] = fg;
+        if (bits & (0x8000 >> c)) rowbuf[r * LCD_W + cx + c] = lcd_px(fg);
       }
     }
     cx += 16;
