@@ -2,10 +2,13 @@
 
 > 写给后续会话：本文档打包 2026-08-24 下午「小屏闪烁/不显示二维码」调试会话的全部上下文，
 > 读完应能无缝接手。项目主计划在 `docs/superpowers/plans/2026-08-20-wechat-self-print.md`。
+>
+> **2026-08-25 增补**：装机锂电池，电池电量上报已实装并实机验证（提交 `81967b2`），
+> 管理页状态栏可查看剩余电量。详见文末「2026-08-25 增补：电池电量上报」与 `firmware/README.md` §九。
 
 ## 一句话现状
 
-ESP32 小屏固件（`firmware/print_screen`）**实机已正常工作**：配网 ✓、轮询主控 ✓、二维码稳定显示且微信可扫 ✓、触摸唤醒 ✓。本次修复两个实机 bug（闪烁 + 无二维码），**改动尚未 git 提交**（等用户确认）。
+ESP32 小屏固件（`firmware/print_screen`）**实机正常工作**：配网 ✓、轮询主控 ✓、二维码稳定显示且微信可扫 ✓、触摸唤醒 ✓、**电池电量上报 ✓（08-25 新增）**。08-24 修复的两个实机 bug（闪烁 + 无二维码）已提交 `06a5cd7`；08-25 电池电量上报已提交 `81967b2`。**工作区干净，无未提交改动。**
 
 ## 本次修复的两个实机 bug（均已在硬件上验证）
 
@@ -27,18 +30,10 @@ ESP32 小屏固件（`firmware/print_screen`）**实机已正常工作**：配�
 
 **防御性注释已写入代码**，经验总结写入 `firmware/README.md` §八（后来者改显示代码前必读）。
 
-## 当前 git 状态（未提交，等用户确认）
+## 当前 git 状态（已全部提交，工作区干净）
 
-```
- M .gitignore                                  # 忽略 tools/arduino-cli/
- M docs/superpowers/plans/2026-08-20-... .md   # Task 10 Step 1-3 勾掉、Step 4 标注进度
- M firmware/README.md                          # vendored qrcode + arduino-cli 路线 + §八踩坑记录
- M firmware/print_screen/display.cpp           # DMA 同步 + 条带化推送
- M firmware/print_screen/print_screen.ino      # SERVER_IP=192.168.31.171 + 下溢修复 + vendored include
-?? firmware/print_screen/src/ricmoo_qrcode/    # vendored QRCode 库（应入库）
-```
-
-建议提交信息：`feat: ESP32 小屏固件实机修复——息屏兜底下溢闪烁 + mono 条带化 DMA 同步，二维码实机验证通过`
+- `06a5cd7` 固件实机修复：闪烁 + 无二维码（含 .gitignore、firmware/README §八踩坑、vendored ricmoo_qrcode 入库、SERVER_IP=192.168.31.171、下溢修复）
+- `81967b2` 电池电量上报（2026-08-25，7 文件 +262/-5，详见文末增补节）
 
 ## 环境/工具链备忘（本次新装，后续会话直接用）
 
@@ -73,6 +68,8 @@ $fqbn = "esp32:esp32:esp32c6:CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=default
 Invoke-RestMethod -Method Post -Uri "http://192.168.31.171:8000/api/screen/wake"
 # 查主控状态
 Invoke-RestMethod -Uri "http://192.168.31.171:8000/api/screen/state"
+# 查电池电量（.battery：pct/mv/charging/vbus/updated_at；需 81967b2 之后的主控代码）
+(Invoke-RestMethod -Uri "http://192.168.31.171:8000/api/screen/state").battery
 # 串口抓取（60s 带时间戳）：C:\arduino-build\serial_cap_ts.py（pyserial 已装在 .venv）
 & "E:\kaifa\自助打印\.venv\Scripts\python.exe" "C:\arduino-build\serial_cap_ts.py"   # 输出 C:\arduino-build\serial3.log
 ```
@@ -81,20 +78,34 @@ Invoke-RestMethod -Uri "http://192.168.31.171:8000/api/screen/state"
 
 ## 待办（按优先级）
 
-1. **git 提交本次固件改动**——等用户确认（上文有建议提交信息）。
-2. **主控 exe 重新打包**：正在运行的 `dist\printshop.exe` 是 13:00 打包的，**落后源码 4 个 fix 提交**（13:20-13:39，含 C1 SCANNED 状态机死锁修复 c92a187）。重新打包后再跑联调。
-3. **Task 10 Step 4 剩余实机项**（需现场/真实扫码流程）：
+1. **主控 exe 重新打包**：`dist\printshop.exe` 已落后源码 6 个提交（含 C1 SCANNED 状态机死锁修复 c92a187、`81967b2` 电池电量上报的主控端 routes.py/admin.html——**不重打包管理页看不到电量**）。打包：`.venv\Scripts\python -m PyInstaller printshop.spec`，打包后再跑联调。
+2. **Task 10 Step 4 剩余实机项**（需现场/真实扫码流程）：
    - 状态文案切换：扫码 → "二维码变暗+请在手机上确认登录" → "已连接，请发送文件" → "已收到 N 个文件" → "打印中"
    - 与浏览器调试页 `/screen` 双屏对照
    - iOS + 安卓各扫一台（本次只验了一台）
    - 连续 2 小时待机（烧屏防护综合验证）
-4. **Task 9 端到端联调未开始**（等现场实机/微信/LibreOffice 环境齐备）。
-5. 部署前置检查提醒：店内路由器**关闭 AP 隔离**（否则小屏访问不到主控）。
+3. **Task 9 端到端联调未开始**（等现场实机/微信/LibreOffice 环境齐备）。
+4. 部署前置检查提醒：店内路由器**关闭 AP 隔离**（否则小屏访问不到主控）。
 
 ## 关键文件
 
-- 固件主体：`firmware/print_screen/print_screen.ino`（轮询/状态机/烧屏防护/触摸唤醒）
+- 固件主体：`firmware/print_screen/print_screen.ino`（轮询/状态机/烧屏防护/触摸唤醒/电池上报）
 - 显示驱动：`firmware/print_screen/display.cpp`（**改前必读 README §八两个坑**）
-- 构建/烧录指南：`firmware/README.md`（含 arduino-cli 路线）
+- 构建/烧录指南：`firmware/README.md`（含 arduino-cli 路线；§九 = 电池电量上报机制与参数契约）
 - 主计划：`docs/superpowers/plans/2026-08-20-wechat-self-print.md`（Task 10 = 本固件）
 - 设计契约：`docs/superpowers/specs/2026-08-20-wechat-self-print-design.md` §6.1（小屏状态机与烧屏防护 4 条）
+
+## 2026-08-25 增补：电池电量上报（提交 81967b2）
+
+装机锂电池后实装。**充电/供电切换无需固件干预**（AXP2101 硬件自动完成，充电参数 500mA 恒流/50mA 截止在 `Custom_PmicRegisterInit()` 早已配好）；电量读取为本次新增。
+
+- **链路**：固件 60s 读一次 AXP2101 电量计缓存（`axp2101_bsp.cpp` 末尾项目自有扩展
+  `Axp2101_EnableBatteryMonitor`/`Axp2101_ReadBattery`，与例程原样复制部分有注释分隔）→
+  每 1.5s 轮询 `GET /api/screen/state` 捎带 `batt_pct/batt_mv/batt_chg/batt_vbus` query 参数 →
+  主控 `routes.py` 宽容解析存内存（任一字段非法整体忽略，**绝不把小屏轮询打成 422**）→
+  管理页（/admin）状态栏显示；百分比/充电态变化时 WS 推 `device` 消息，连接即收快照。
+- **管理页显示**：`🔋 85%·充电中` / `🔋 42%` / `🔋 98%·USB`；<20% 且非充电**红色**；
+  >3 分钟未上报**置灰**（兼作板子在线指示）；悬停看电压与上报时间。
+- **兼容性**：响应体新增 `battery` 字段，固件 ArduinoJson 自动忽略未知字段——旧主控配新固件不炸（但看不到电量）；无电池时固件不追加参数，主控 `battery=null`。
+- **实机验证（08-25）**：编译烧录 COM3 ✓；串口外 API 全链路：板子上报 `25% / 3.81V / 充电中`（新电池补电中），`updated_at` 随轮询持续刷新 ✓；/admin 200 含电量元素 ✓；pytest 206 例全绿（新增 5 例，3 例旧 WS 用例适配 device 快照）。
+- **部署注意**：`dist\printshop.exe` 不含本次主控改动——管理页要看到电量必须重打包或源码运行（见待办 1）。
