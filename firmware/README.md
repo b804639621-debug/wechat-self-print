@@ -20,6 +20,13 @@
 | `fonts.h` | 16×16 单色点阵字库（覆盖全部界面文案），由 `gen_font.py` 生成 |
 | `gen_font.py` | 字库生成脚本（改动界面文案后重新运行，需 Pillow） |
 
+另：`ble_spike/`（2026-08-25 新增）——Task 10B Step S0 的 BLE 可行性 spike 固件（一次性测量工具）：
+关 WiFi 纯 BLE（NimBLE）广播 + GATT `PRINTSHOP-SCREEN` 服务（screen_state 写 / battery_report notify /
+link_status read+notify），空闲 ALDO3 面板断电、写 display=on 冷启动画二维码。display.cpp 副本已拆出
+可重入的 `lcd_panel_power_on/off()`（S1 整合回 print_screen 的 TRANSPORT_BLE 开关）。
+PC 侧测量脚本在 `tools/poc/ble_spike_pc.py`、`tools/poc/ble_probe_stages.py`，
+实测数据与结论见 `docs/debug-logs-2026-08-25/task10b-s0-spike.md`。
+
 > 驱动文件来源：微雪官方 Gitee 仓 `https://gitee.com/waveshare/ESP32-C6-Touch-AMOLED-2.16`
 > 路径 `02_Example/Arduino-v3.3.3/09_LVGL_V9_Test/`，commit `b77979b8302e1f94b81a7f18696ce60d7afde94a`。
 > 除 `axp2101_bsp.cpp` 补了例程仓缺失的 `TAG` 定义（编译修复）外，其余为原样复制。
