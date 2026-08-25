@@ -20,15 +20,23 @@
 #define LCD_COLOR_GRAY    0x8410   /* 50% 灰（二维码“变暗”用） */
 #define LCD_COLOR_RED     0xF800
 
-/* 亮度 60%（初始化时设置一次）：亮屏仅在服务期间、完成服务即熄屏，
- * 静画停留时间短，60% 亮度下烧屏风险低（2026-08-25 由 80% 下调，替代像素平移方案） */
+/* 亮度 60%（每次 lcd_panel_power_on 重设）：亮屏仅在服务期间、完成服务即熄屏，
+ * 静画停留时间短，60% 亮度下烧屏风险低（2026-08-25 由 80% 下调，替代像素平移方案）。
+ * 注意：ALDO3 断电后亮度寄存器丢失，亮度设置必须随上电重发（在 power_on 内而非 lcd_init） */
 #define LCD_BACKLIGHT_PCT 60
 
 #define LCD_W 480
 #define LCD_H 480
 
-/* 必须在 PMU（AXP2101）初始化之后调用：屏供电走 PMU，顺序不可颠倒 */
+/* 必须在 PMU（AXP2101）初始化之后调用：屏供电走 PMU，顺序不可颠倒。
+ * 只做一次：SPI 总线 + 面板句柄 + DMA 缓冲，随后内部转调 lcd_panel_power_on()。 */
 void lcd_init(I2cMasterBus& i2cbus);
+
+/* 面板反复上下电（Task 10B BLE 通道）：ALDO3 断电后面板寄存器状态丢失，再点亮必须重发
+ * 初始化序列；SPI 总线/panel 句柄/DMA 缓冲只在 lcd_init 创建一次，本函数可重入调用。
+ * 空闲态面板彻底断电（ALDO3 off）是 BLE 低功耗的前提。 */
+void lcd_panel_power_on(void);   /* ALDO3 上电复位 + 重发面板初始化序列 + 亮度 60% */
+void lcd_panel_power_off(void);  /* DISPOFF + ALDO3 断电（空闲态） */
 
 /* 背光 0..100（SH8601 0x51 命令，无独立背光 GPIO） */
 void lcd_set_backlight(uint8_t pct);

@@ -2,6 +2,8 @@
  * display.cpp —— 无 LVGL 的轻量显示驱动（esp_lcd 直绘）。
  * 显示面板 SH8601 的创建/初始化序列与微雪例程 bsp_lvgl_port.cpp 完全一致，
  * 仅剥离了 LVGL 相关的缓冲/刷屏/事件部分，改为提供 fillRect/点阵/文本原语。
+ * 面板电源（Task 10B BLE 通道）：lcd_init 只做一次总线/句柄/缓冲创建，
+ * 上电复位 + 初始化序列拆到可重入的 lcd_panel_power_on/off，支持空闲态断电省电。
  */
 #include <Arduino.h>
 #include <assert.h>
@@ -138,13 +140,6 @@ void lcd_init(I2cMasterBus& i2cbus) {
 
   ESP_ERROR_CHECK(esp_lcd_new_panel_sh8601(io_handle, &panel_config, &panel));
 
-  /* 屏复位：PMU ALDO3 掉电重上电（必须 PMU 已初始化） */
-  Axp2101_SetAldo3(1); vTaskDelay(pdMS_TO_TICKS(100));
-  Axp2101_SetAldo3(0); vTaskDelay(pdMS_TO_TICKS(100));
-  Axp2101_SetAldo3(1); vTaskDelay(pdMS_TO_TICKS(100));
-
-  ESP_ERROR_CHECK(esp_lcd_panel_init(panel));   /* 下发初始化序列（含 0x11 开眠 + 0x29 开显） */
-
   for (int i = 0; i < 2; i++) {
     rowbuf[i] = (uint16_t*)heap_caps_malloc(BSP_LCD_H_RES * STRIP_H * sizeof(uint16_t), MALLOC_CAP_DMA);
     assert(rowbuf[i] && "rowbuf DMA alloc failed");
@@ -152,8 +147,26 @@ void lcd_init(I2cMasterBus& i2cbus) {
   s_color_done = xSemaphoreCreateBinary();
   assert(s_color_done && "dma sem alloc failed");
 
-  /* 亮度 60%（display.h LCD_BACKLIGHT_PCT） */
+  lcd_panel_power_on();   /* 上电复位 + 初始化序列（Task 10B 拆分为可重入） */
+}
+
+/* 面板反复上下电（Task 10B BLE 通道）：空闲态 ALDO3 断电，再点亮必须重发初始化序列；
+ * SPI 总线/panel 句柄/DMA 缓冲只在 lcd_init 创建一次，这里只做上电 + 重发，可重复调用。 */
+void lcd_panel_power_on(void) {
+  /* 屏复位：PMU ALDO3 掉电重上电（必须 PMU 已初始化） */
+  Axp2101_SetAldo3(1); vTaskDelay(pdMS_TO_TICKS(100));
+  Axp2101_SetAldo3(0); vTaskDelay(pdMS_TO_TICKS(100));
+  Axp2101_SetAldo3(1); vTaskDelay(pdMS_TO_TICKS(100));
+
+  ESP_ERROR_CHECK(esp_lcd_panel_init(panel));   /* 重发初始化序列（含 0x11 开眠 + 0x29 开显） */
+
+  /* 亮度必须随上电重设：ALDO3 断电后亮度寄存器丢失，不能只设在 lcd_init（spike 已搬入） */
   lcd_set_backlight(LCD_BACKLIGHT_PCT);
+}
+
+void lcd_panel_power_off(void) {
+  lcd_screen_off();          /* 全黑 + DISPOFF（AMOLED 黑像素不发光，物理等效息屏） */
+  Axp2101_SetAldo3(0);       /* 面板彻底断电（空闲省电核心） */
 }
 
 void lcd_set_backlight(uint8_t pct) {

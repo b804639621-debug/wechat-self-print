@@ -785,7 +785,7 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 
 > **决策**：小屏改为 **BLE 唤醒 + BLE 数据通道**，替代 WiFi/HTTP 轮询。平时面板 ALDO3 彻底断电、WiFi 关闭、CPU 尽量 light-sleep，仅维持低占空比 BLE 广播；管理员托盘点亮时经 BLE 唤醒并下发状态数据。**音频 ALDO1/ALDO2 不在本任务范围**（另有安排）。
 > **决策（2026-08-25 补充）**：**放弃触摸唤醒**——唯一唤醒入口 = 管理员点击系统托盘图标（现有"触摸 → POST /api/screen/wake"路径随之退役）。TRANSPORT_BLE 固件不再初始化 CST9220；触摸 IC 若随 ALDO3 断电则顺带断电（正好省电），触摸供电轨悬念不再阻塞本任务。
-> **状态**：计划已写入，未进入实施；S0 spike 通过并确认后才开始 S1。
+> **状态**：S0 spike 已执行（2026-08-25），实测数据见 `docs/debug-logs-2026-08-25/task10b-s0-spike.md`。**用户评审结论（08-25）：冷唤醒 3.3s 接受（Go）；空闲电流测量挂起（无功率计硬件）；低功耗路线难度分析后定**。light-sleep+BLE 共存被 sdkconfig 实锤不可用（`CONFIG_PM_ENABLE`/`CONFIG_BT_LE_SLEEP_ENABLE` 均未开）。
 
 **Files:**
 - Create: `firmware/print_screen/ble_link.cpp/.h`（GATT 服务/广播/状态收发）、`printshop/ble_link.py`（主控 BLE Central 连接管理）、`printshop/tests/test_ble_link.py`
@@ -817,7 +817,7 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 | `battery_report`（Notify） | 小屏 → PC | 每 60s 上报 `pct/mv/charging/vbus`，主控照旧进管理页 |
 | `link_status`（Read/Notify） | 小屏 → PC | 心跳/固件版本/重连诊断（仅连接期间有效） |
 
-**MTU 硬条款（2026-08-25 评审增补）**：`screen_state` JSON 含 qr_content（约 48 字符 URL）+ state + message，序列化后约 100～150B，超出默认 ATT MTU 23（有效载荷 20B）。契约要求连接后协商 MTU ≥ 185（C6 Bluedroid 与 WinRT 均支持到 517）；协商失败则降级为精简字段/分包协议（qr_content 单独一次写）。**MTU 协商列为 S0 必验项**。
+**MTU 硬条款（2026-08-25 评审增补；S0 已验证通过）**：`screen_state` JSON 含 qr_content（约 48 字符 URL）+ state + message，序列化后约 100～150B，超出默认 ATT MTU 23（有效载荷 20B）。契约要求连接后协商 MTU ≥ 185；协商失败则降级为精简字段/分包协议（qr_content 单独一次写）。**S0 实测：NimBLE 本地 setMTU(517) + WinRT 协商，每次连接均达 517，49 字符二维码 JSON 单次写成功。**
 
 **空闲电池上报策略（2026-08-25 评审增补）**：notify 依赖连接，空闲期只有广播，电池数据会断流（管理页">3 分钟未上报置灰"将永久置灰）。定案：**主控每 10～30 分钟主动连接一次**读取电池状态 + `link_status`，兼作小屏在线心跳。广播包不捎带电量（维持下方安全边界）。
 
@@ -831,43 +831,44 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 | 空闲（若 Arduino BLE 栈无法 light-sleep，CPU 常醒） | CPU 38mA 级 + BLE | 约 8～20mA | 约 2～5 天 |
 | 服务中（面板亮 + BLE 连接） | 屏幕 + CPU + BLE | 约 60～130mA | 连续亮屏 8～16h，仅服务期间发生 |
 
-**托盘点击 → 二维码延迟预算**（广播 500ms、缓存静态地址直连、二维码未过期、沿用现有 600ms 面板初始化）：
+**托盘点击 → 二维码延迟预算**（2026-08-25 S0 实测修订：广播 100ms——500ms 档 Windows 建连等广播 4~9s 不可接受，50ms 档无进一步改善；winrt direct 路径（绕开 bleak），二维码未过期，沿用现有 600ms 面板初始化）：
 
-| 阶段 | 典型耗时 |
+| 阶段 | 实测耗时 |
 |---|---|
-| 托盘点击 → FastAPI `wake()` 完成 | 20～50ms |
-| BLE 等待广播包（500ms 间隔） | 0～500ms（平均 250ms） |
-| BLE 建连 | 50～150ms |
-| GATT 服务发现 + 写 `screen_state` | 200～500ms |
-| ALDO3 上电 + 面板冷启动 | 600～800ms（当前最大头） |
-| 清屏 + 绘制二维码 | 50～100ms |
-| **合计** | **典型 1.5～2.5s，最坏约 3s** |
+| 托盘点击 → FastAPI `wake()` 完成 | 20～50ms（沿用估计，S2 验证） |
+| BLE 设备对象创建（from_bluetooth_address） | ~70ms |
+| BLE 冷建连 + for_uuid 服务发现（重试模式） | **~2.0s（1.8~2.8s，Windows 固定调度，不随广播间隔 ≤100ms 改善）** |
+| CCCD 订阅 + 写 `screen_state` | ~100ms |
+| ALDO3 上电 + 面板冷启动 | 1132ms（复位 300ms + 初始化表 ~700ms + 绘制 ~130ms，当前最大头） |
+| **合计** | **典型 ~3.3s，最坏 ~4.1s（实测 15 轮）** |
 
-- 面板初始化按数据手册从 600ms 降到 120～200ms（必须实测无花屏）后：**1.2～2s**。
-- 服务结束后保持 BLE 连接 2 分钟的"快速重醒窗口"（面板仍断电）：**约 0.8～1.2s**。
+- 面板初始化按数据手册 600ms→120~200ms + ALDO3 复位序列压缩（S3 逐档实测无花屏才降）后：**~2.6s，贴门槛**。
+- 服务结束后保持 BLE 连接 2 分钟的"快速重醒窗口"（面板仍断电）：**实测 ~1.2s**（免建连）；面板优化后 ~0.6s。
 - 二维码过期需向微信换新码：额外 0.2～1s，可与亮屏并行、不阻塞。
-- 推荐两段式：平时 500ms 广播省电；服务结束后 2 分钟保持连接覆盖连续顾客。
+- 推荐两段式：平时 100ms 广播；服务结束后 2 分钟保持连接覆盖连续顾客。
+- 可选探索（未验证，收益不确定）：Windows bonding 可能压缩建连 2s 与启用 GATT 服务缓存。
 
-**风险清单**：①Windows BLE 栈扫描/直连稳定性（PC 睡眠、驱动断连、**主控进程重启后的首次连接**——WinRT 对未扫描地址直连的行为需 S0 实测）；②Arduino Bluedroid 能否与 light-sleep 共存（当前 sdkconfig `CONFIG_PM_ENABLE` 未开，若电流下不去需评估 NimBLE/ESP-IDF）；③PyInstaller 打包 winrt 依赖；④部署机必须有蓝牙（2026-08-25 用户确认店内目标机器均有蓝牙，**此项排除**）；⑤BLE 距离/隔板需实测；⑥唤醒延迟与广播间隔的权衡；⑦**MTU 协商失败**（见 GATT 契约硬条款，S0 必验）；⑧降级方案备忘：若 light-sleep 在 Arduino 层走不通且不接受 8～20mA，可退"WiFi modem-sleep + 空闲 ALDO3 断电 + 空闲轮询降频 5～10s"中间态（约 5～15mA，不动 Windows 侧）。
+**风险清单（2026-08-25 S0 实测更新）**：①Windows BLE 栈——**实测定论**：bleak 标准 connect 路径冷连接 5~13s 不可用；**S2 主控 `ble_link.py` 直接基于 winrt API**（from_addr → for_uuid 服务查询重试模式，冷建连稳定 ~2s）；进程重启首连已验证；PC 睡眠/exe 重启/距离场景仍归 S4 补测。**S1 实测补充**：Windows 侧 `close()`/进程退出后底层 BLE 连接延迟 4~18s 才真断（WinRT 连接回收语义）→ 固件"系统维护中"按真实断连边沿触发，主控崩溃场景提示出现有数秒延迟属预期；②低功耗——**实锤**：core 3.3.3 esp32c6 的 BLE 栈为 **NimBLE**（非 Bluedroid），且 sdkconfig 未开 `CONFIG_PM_ENABLE` 与 `CONFIG_BT_LE_SLEEP_ENABLE`，Arduino 默认环境下 light-sleep 期间 BLE 广播不保持；要低功耗须重编 esp32-arduino-libs 开两项 / 转 ESP-IDF / 接受 CPU 常醒 8~20mA / 退风险⑧——待电流实测后定路线；③PyInstaller 打包 winrt 依赖（S4 验证）；④部署机蓝牙（已排除）；⑤BLE 距离/隔板需实测；⑥唤醒延迟与广播间隔权衡——**实测甜点和 100ms**（500ms 档 Windows 建连 4~9s 不可接受，50ms 档无改善徒增功耗，计划原定 500ms 已下修）；⑦MTU 协商——**S0 通过**（每次协商 517）；⑧降级方案备忘：若低功耗路线全部走不通且不接受 8~20mA，退"WiFi modem-sleep + 空闲 ALDO3 断电 + 空闲轮询降频 5～10s"中间态（约 5～15mA，不动 Windows 侧）。
 
 **回滚策略**：保留 WiFi 固件二进制与源码分支；固件 `TRANSPORT_WIFI/BLE` 编译开关二选一；主控 `ScreenTransport` 抽象为 HTTP/BLE 两个实现，BLE 不稳定时一键退回 HTTP 模式。
 
-- [ ] **前置（2026-08-25 评审增补）**：先收尾 Task 9——未提交修复代码完成提交、`dist/printshop.exe` 重打包冒烟（见 `docs/handoff-2026-08-25-task9-e2e.md` 待办 1/2），在干净基线上开工
-- [ ] **Step S0: BLE 可行性 spike（先做，S0 通过才继续）**
-  - [ ] 最小固件：关 WiFi、开 BLE 广播 + 可写 `screen_state`；ALDO3 断电/上电；电池 notify 最小实现
-  - [ ] PC 侧临时脚本：bleak 扫描/缓存地址直连、写 state、收 notify；**专门验证"主控进程重启后的首次连接"与 MTU 协商 ≥185**
-  - [ ] 测托盘点击 → 二维码全链路延迟 20 次，记录平均值/P95/最大值
-  - [ ] 空闲电流测量（500ms/1s 广播各一档）：优先查 XPowersLib 是否可读 AXP2101 放电电流 ADC（可读则固件自报），否则外接 USB 功率计串电池线——**不采用电池斜率法**（小时级且误差大，AXP2101 无库仑计）
-  - [ ] **Go/No-go 门槛**：连接成功率 ≥90%、冷唤醒典型 ≤2.5s 且最坏 ≤3s（二维码有效时）；空闲平均电流目标 ≤3mA（若 3～10mA 提交评审后再决定）；**MTU 协商成功**
-- [ ] **Step S1: 固件 BLE 传输落地**
-  - [ ] `TRANSPORT_BLE` 编译开关 + GATT 服务完整实现（状态/电池/心跳）；**该开关下不再初始化 CST9220、删除 `handleTouch` 轮询**（触摸唤醒已放弃，唤醒仅由主控 BLE 写入驱动）
-  - [ ] 固定静态地址，主控缓存直连；广播间隔默认 500ms
-  - [ ] 面板电源状态机：ALDO3 断电 ↔ 冷启动；保留现有 DMA 同步/自愈与烧屏防护策略
-  - [ ] 服务中 BLE 状态推送重绘；**"系统维护中"仅在连接保持期间断连时显示**（空闲期本无连接，主控宕机时小屏保持休眠黑屏、不主动亮屏报错——该语义更新同步写入 spec §6.1）
-  - [ ] **二维码过期两段式写**：wake 时若 qr 过期需 jslogin 换新（0.2～1s）——先写 display=on + "加载中"占位画面亮屏，新码到手再推 `screen_state` 覆盖；GATT 契约与固件状态机按此实现
-  - [ ] 服务结束后 2 分钟快速重醒窗口（**主控侧计时**，窗口内保持连接、面板仍断电），超时主控主动断开回广播休眠
+- [x] **前置（2026-08-25 评审增补）**：先收尾 Task 9——未提交修复代码完成提交（`93e0b91`）、`dist/printshop.exe` 重打包冒烟（08-25 ~12:55 重打包，见 `docs/handoff-2026-08-25-task9-e2e.md`）✓
+- [x] **Step S0: BLE 可行性 spike（已执行，2026-08-25，数据见 `docs/debug-logs-2026-08-25/task10b-s0-spike.md`）**
+  - [x] 最小固件：`firmware/ble_spike/`——关 WiFi、BLE 广播 + 可写 `screen_state`；ALDO3 断电/上电（display.cpp 拆分 `lcd_panel_power_on/off` 可重入）；电池 notify 最小实现（5s 间隔验证通过）
+  - [x] PC 侧脚本：`tools/poc/ble_spike_pc.py`（bleak 路径，实测冷连接 5~13s 判不可用）+ `tools/poc/ble_probe_stages.py`（winrt 分段/直连/e2e 探针）；**"主控进程重启后的首次连接"验证通过**（每次新进程首连均成功）；**MTU 协商 517 ≥185 通过**
+  - [x] 延迟测量：e2e 15 轮全成功——冷唤醒全链路典型 **3.3s**（最坏 4.1s）= PC 建连 ~2.0s + 固件冷启动 ~1.13s；快速重醒窗口 ~1.2s
+  - [ ] 空闲电流测量：**阻塞**——AXP2101 确认无放电电流 ADC（XPowersLib 0.3.3 实查），需外接 USB 功率计串电池线，待硬件到位补测
+  - [ ] **Go/No-go 门槛**：成功率/MTU/首连 PASS；冷唤醒 3.3s 超门槛（≤2.5s/3s），面板初始化 600→200ms（S3 既定项）后预期 ~2.6s 贴门槛；电流待测。**用户评审（08-25）：冷唤醒 3.3s 接受（Go）；电流测量挂起（无功率计）；低功耗路线待分析定夺**
+- [x] **Step S1: 固件 BLE 传输落地**（已实施 2026-08-25：子代理分 T1 改造+编译 / T2 烧录+e2e / T3 电池竞态修复三段，主代理逐段审阅）
+  - [x] `TRANSPORT_BLE` 编译开关（`transport_config.h`，默认 BLE、`-DTRANSPORT_WIFI` 注入回滚）+ GATT 服务完整实现（`ble_link.cpp/.h`：状态/电池/心跳）；**该开关下不再初始化 CST9220、无 `handleTouch` 轮询**（触摸唤醒已放弃，唤醒仅由主控 BLE 写入驱动）
+  - [x] 固定静态地址（沿用芯片 public 地址，eFuse MAC 重启不变，无需额外代码；烧录确认广播地址 `20:6E:F1:16:D9:2E` 与 S0 一致），主控缓存直连；广播间隔 **100ms**（S0 实测下修：500ms 档 Windows 建连 4~9s 不可用，50ms 档无改善徒增功耗）
+  - [x] 面板电源状态机：ALDO3 断电 ↔ 冷启动（`display.cpp` 拆出可重入 `lcd_panel_power_on/off`，亮度随上电重发——断电后亮度寄存器丢失）；DMA 同步/自愈与烧屏防护策略原样保留
+  - [x] 服务中 BLE 状态推送重绘；**"系统维护中"仅在连接保持期间断连时显示**（语义已同步 spec §6.1；实测断连边沿清重绘守卫，重连同状态推送强制重绘 fw_ms=131ms。附注：Windows close/进程退出后底层连接延迟 4~18s 才真断，崩溃场景提示出现有数秒延迟属预期）
+  - [x] **二维码过期两段式写**：空 qr → "二维码加载中..."占位亮屏（实测 fw 1045ms 含面板冷启动），新码到手再推 `screen_state` 覆盖（实测 134ms），重复推送被重绘守卫跳过（0ms）
+  - [x] 服务结束后 2 分钟快速重醒窗口（**主控侧计时**，窗口内保持连接、面板仍断电——固件侧无需逻辑，计时归 S2 主控实现），超时主控主动断开回广播休眠
+  - [x] 附（主代理审阅发现+T3 修复）：battery_report 首包竞态——连接即报早于客户端 CCCD 订阅被 NimBLE 丢弃，改 `onSubscribe` 生效后下一 tick 补发，实测订阅后 2.16s 拿到电量；断连边沿清 qrShown/lastStatusKey 守卫（否则重连同状态推送维护画面滞留）
 - [ ] **Step S2: 主控 BLE 接入**
-  - [ ] `ScreenTransport` 抽象 + `printshop/ble_link.py`（扫描/缓存直连/重连/写 state/收 battery；**进程重启后首连先短扫描再直连**）
+  - [ ] `ScreenTransport` 抽象 + `printshop/ble_link.py`——**S0 定论：不走 bleak（其 Windows connect 路径冷连接 5~13s 不可用），直接基于 winrt API**：常驻广告 watcher 或缓存地址 from_bluetooth_address → `get_gatt_services_for_uuid_async` 触发建连（0x80070016 时 0.2s 间隔重试）→ 写 state/收 battery notify（参考实现 `tools/poc/ble_probe_stages.py` 的 e2e 模式）；进程重启后首连已验证稳定 ~2s
   - [ ] `sm.on_change → push_state`；托盘 `/api/screen/wake` 流程打通
   - [ ] 电池 notify 接入现有 `AppContext.update_battery` 与 WS `device` 推送；**周期连接任务（10～30 分钟）拉取电池 + 在线心跳**（见 GATT 契约"空闲电池上报策略"）
   - [ ] **绑定/配置路径**：`config.py` 新增小屏 BLE 地址/设备名前缀绑定项（WiFiManager 退役后的等效物）；写清首次绑定与换主控/换屏的重新绑定步骤
@@ -934,3 +935,6 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 - 2026-08-21（之二）：依据 Task 0 执行会话（`task-0.json`，147 条消息）的扩展排查定案（m1-verification §7 v2/§8/§9）修订**打印方案**：SumatraPDF 主路径废弃 → **PyMuPDF 原页渲染 → XPS 打包 → XpsDocumentWriter.Write + PrintTicket**（三铁律：勿 show_pdf_page / Viewbox 自然尺寸 / 禁用 AddJob）。**新增 Task 7B**（打印引擎 XPS 化返工，含 Config.render_dpi、Office COM/LibreOffice 双轨、图片 contain-fit、pythonnet 选型决策点、双机人工验证）；Task 4 加废弃注记（对外契约不变）；联动修订 Tech Stack / Global Constraints / 文件结构 / Task 9（前置依赖 7B + 双机回归）/ Task 12（pythonnet 打包注记）/ Self-Review 执行顺序。Task 10 不受打印方案影响，上一修订保持有效。
 - 2026-08-25（省电改造定案，仅计划未实施）：依据电池续航评估与用户决策，**新增 Task 10B「小屏 BLE 省电改造」**——小屏改为 BLE 唤醒 + BLE 数据通道，替代 WiFi/HTTP 轮询；空闲时 ALDO3 面板彻底断电、WiFi 关闭、CPU 尽量 light-sleep，仅维持低占空比 BLE 广播。明确范围：**音频 ALDO1/ALDO2 与触摸轨不在本任务范围**（音频另有安排）。含 GATT 契约、功耗预算、托盘点击→二维码延迟预算（典型 1.5～2.5s，最坏约 3s；优化后 1.2～2s；快速重醒窗口 0.8～1.2s）、S0 spike Go/No-go 门槛与 S0–S4 实施步骤。实施前需用户确认，S0 未通过不得进入 S1。
 - 2026-08-25（之二，Task 10B 评审细化）：用户决策**放弃触摸唤醒**（唯一唤醒入口 = 管理员点击系统托盘），触摸供电轨悬念与触摸中断改造随之取消，TRANSPORT_BLE 固件不再初始化 CST9220。评审增补：GATT **MTU ≥185 硬条款**（S0 必验）；空闲电池上报断流问题定案为**主控周期连接（10～30 分钟）拉取**兼在线心跳；S0 新增前置项（先收尾 Task 9 提交与 exe 重打包）、补"主控进程重启后首次连接"验证、电流测量改 AXP2101 放电 ADC/外接功率计（弃电池斜率法）；S1 补触摸移除、"系统维护中"仅连接保持期断连显示、二维码过期两段式写、快速重醒窗口归主控计时；S2 补绑定/配置路径（config.py 小屏 BLE 地址）与周期心跳任务；S4 补 PC 睡眠/exe 重启/距离隔板/多设备干扰场景；风险④（部署机蓝牙）经用户确认排除，新增风险⑦（MTU 协商）与⑧（WiFi 省电中间态降级备忘）。
+- 2026-08-25（之三，Task 10B S0 执行）：spike 固件 `firmware/ble_spike/` + PC 探针 `tools/poc/ble_probe_stages.py`/`ble_spike_pc.py` 落地，55+ 轮连接循环。结论：连接成功率 100%、MTU 恒 517、电池 notify 与进程重启首连全过；**冷唤醒典型 3.3s 超门槛**（PC 冷建连 ~2s 为 Windows 固定调度 + 固件冷启动 1.13s，S3 面板初始化优化后预期 ~2.6s）；**空闲电流阻塞待功率计硬件**（AXP2101 无放电电流 ADC 实查）。关键架构定论：①esp32c6 core 3.3.3 BLE 栈为 **NimBLE**；②**S2 主控不走 bleak**（Windows connect 路径 5~13s 不可用），直接基于 winrt API（for_uuid 查询重试模式）；③Windows 不缓存未配对设备 GATT 服务；④**广播间隔甜点 100ms**（500ms 档 Windows 建连 4~9s 不可接受，计划原定 500ms 已下修）；⑤light-sleep+BLE 共存被 sdkconfig 实锤不可用（`CONFIG_PM_ENABLE`/`CONFIG_BT_LE_SLEEP_ENABLE` 均未开），低功耗路线待电流数据后定。详见 `docs/debug-logs-2026-08-25/task10b-s0-spike.md`。
+- 2026-08-25（之四，Task 10B S0 评审结论）：用户接受冷唤醒 3.3s（**Go**）；空闲电流测量挂起（无功率计硬件）。低功耗路线分析（详见 S0 报告 §三⑤与当日会话）：**A. CPU 常醒+广播**（估 8~20mA，续航 2~5 天，零技术风险，CPU 降频一行级优化）；**B. 重编 esp32-arduino-libs 开 `CONFIG_PM_ENABLE`+`CONFIG_BT_LE_SLEEP_ENABLE`**（目标 1~3mA/2~8 周，需 ESP-IDF v5.5 构建环境 + 全量 libs 重编替换，1~2 天投入；悬念：板载 32.768kHz 晶振未能在线确认——sdkconfig 默认 RTC 慢时钟走内部 RC、BLE 低功耗时钟走主晶振，无外部 32k 时连接保持期有漂移风险；且无功率计则电流调优无反馈回路）；**C. ESP-IDF 原生固件**（收益同 B、成本远高于 B，不推荐）；**D. WiFi modem-sleep 中间态**（5~15mA，与 A 同量级却放弃 BLE 投入，仅作 BLE 店内环境崩盘退路）；**E. deep-sleep+周期广播窗口**：Windows 冷建连固定 ~2s 决定广播窗口下限 2~3s，省电与唤醒延迟死结，分析后排除。**推荐 A 先行上线，B 待有功率计再评估**——待用户定夺。
+- 2026-08-25（之五，Task 10B S1 实施）：用户定夺低功耗路线——**A（CPU 常醒+广播，估 8~20mA/续航 2~5 天）先行上线，B（重编 esp32-arduino-libs 开 `CONFIG_PM_ENABLE`+`CONFIG_BT_LE_SLEEP_ENABLE`）挂后续优化方向**。S1 固件落地，实施模式为子代理分段实施 + 主代理逐段审阅：新建 `transport_config.h`（编译开关，默认 TRANSPORT_BLE；注意 esp32 core 3.3.3 的 `build.extra_flags` 默认值含 ESP32/CDC 等宏，注入 `-DTRANSPORT_WIFI` 时必须保留全量默认值否则 WiFiManager 编译崩）、`ble_link.cpp/.h`（GATT 服务/广播 100ms/电池 60s/MAC 启动打印）、`display.cpp` 拆 `lcd_panel_power_on/off`（亮度随上电重发）、`print_screen.ino` 双通道重构（WiFi 路径逐行保留可回滚）。主代理审阅修复 2 处：①断连边沿清 qrShown/lastStatusKey 重绘守卫（否则重连后同状态推送"系统维护中"滞留）；②电池连接即报在开机 60s 内不触发。实测（T2/T3/验收）：e2e 10 轮全过（冷唤醒 3.5s/稳态 1.44s、fw 恒 1133ms、MTU 恒 517）；维护态语义 PASS；两段式写 PASS（占位 1045ms → 覆盖 134ms → 守卫跳过 0ms）；T3 修 battery_report 首包竞态（连接即报早于 CCCD 订阅被 NimBLE 丢弃 → onSubscribe 生效后补发），订阅后 2.16s 拿电量。spec §6.1 已同步（维护态 BLE 语义/触摸唤醒放弃/传输通道注记）。板子当前已烧 TRANSPORT_BLE 固件。
