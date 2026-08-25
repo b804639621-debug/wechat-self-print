@@ -683,10 +683,10 @@ main.py 中实例化并 `run_thread()`；后台任务定期按 SessionManager.st
 
 **Files:** Modify: 联调中发现的缺陷修复
 
-- [ ] **Step 0: 部署前置检查**：**Task 7B 必须已完成**（打印主路径为 XPS+PrintTicket）；店内路由器**关闭 AP 隔离**（否则小屏/手机访问不到主控，最高发坑）；Office 转换主路径为本机 Office COM（Office16 已实测），LibreOffice 可选安装作兜底；若 Task 10 已完成，小屏与调试页 `/screen` 同屏对照
-- [ ] **Step 1: 按 spec §3.1 主流程走查**：点托盘 → 小屏/调试页出码 → 手机扫码 → 确认登录 → 发 3 个文件（PDF+图片+docx）+ 1 条文字 → 管理端弹窗/备注横幅 → 预览 → **双机打印验证（Epson 彩色双面 + 柯美黑白双面，均走 XpsWriter）** → 完成服务 → 确认 inbox 清空、会话登出、任务归档
-- [ ] **Step 2: 按 spec §3.2 异常表逐项注入**：断网/掉线恢复、扫码不确认超时、5 分钟无文件提醒、打印失败重打、zip 标红
-- [ ] **Step 3: 缺陷修复并补回归测试** → **Step 4: Commit** `fix: 端到端联调问题修复`
+- [x] **Step 0: 部署前置检查** ✅ 2026-08-25（XPS 主路径、AP 隔离已关、Office COM 转换实测通过）：**Task 7B 必须已完成**（打印主路径为 XPS+PrintTicket）；店内路由器**关闭 AP 隔离**（否则小屏/手机访问不到主控，最高发坑）；Office 转换主路径为本机 Office COM（Office16 已实测），LibreOffice 可选安装作兜底；若 Task 10 已完成，小屏与调试页 `/screen` 同屏对照
+- [x] **Step 1: 按 spec §3.1 主流程走查** ✅ 2026-08-25（打印矩阵：Epson 彩色真双面/柯美黑白双面/图片彩色单面/双面灰度全过；完成服务清理归档登出全验证）：点托盘 → 小屏/调试页出码 → 手机扫码 → 确认登录 → 发 3 个文件（PDF+图片+docx）+ 1 条文字 → 管理端弹窗/备注横幅 → 预览 → **双机打印验证（Epson 彩色双面 + 柯美黑白双面，均走 XpsWriter）** → 完成服务 → 确认 inbox 清空、会话登出、任务归档
+- [x] **Step 2: 按 spec §3.2 异常表逐项注入** ✅ 2026-08-25（断网恢复免重扫 ✓、扫码不确认 2min 超时作废出新码 ✓、5min 无文件提醒 ✓、失败重打 ✓、zip 标红 ✓）：断网/掉线恢复、扫码不确认超时、5 分钟无文件提醒、打印失败重打、zip 标红
+- [x] **Step 3: 缺陷修复并补回归测试** ✅ 2026-08-25（8 枚实机缺陷含花屏奇数 x 起点根治、扫码链路 wake 复用码修复；pytest 212 绿；详见 docs/handoff-2026-08-25-task9-e2e.md） → **Step 4: Commit** `fix: 端到端联调问题修复`（待用户确认）
 
 ---
 
@@ -776,9 +776,107 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 
 - [ ] **Step 4: 人工验证 checklist**：首次配网 ✓ 息屏/点亮切换 ≤2s ✓ 二维码微信可扫（iOS+安卓各一，顺带确认白底黑码极性决定）✓ 状态文案切换 ✓ 触摸唤醒 ✓ 连续 2 小时待机无异常 ✓ **与浏览器调试页 /screen 同屏对照（固件显示与主控状态一致）** ✓
   - 进度（2026-08-24）：首次配网 ✓、触摸唤醒 ✓、息屏/点亮 ✓、二维码稳定显示且微信可扫 ✓（单端）；**待现场**：状态文案切换（真扫码登录流程）、双屏对照、iOS+安卓双端、2h 待机。
+  - 进度（2026-08-25）：状态文案切换 ✓、双屏对照 ✓、安卓扫码全链路 ✓、花屏根治（SH8601 奇数 x 起点寻址错位，偶数对齐+删防烧屏平移+亮度 60%，详见 firmware/README 与 handoff-2026-08-25-task9-e2e.md）；**待机中**：2h 观察自 ~12:55 起（cron 提醒 14:47）；**待用户自测**：iOS 扫码（无 iOS 设备）。
 - [ ] **Step 5: Commit** `feat: ESP32 小屏固件`
 
 ---
+
+### Task 10B: 小屏 BLE 省电改造（2026-08-25 追加计划，尚未实施）
+
+> **决策**：小屏改为 **BLE 唤醒 + BLE 数据通道**，替代 WiFi/HTTP 轮询。平时面板 ALDO3 彻底断电、WiFi 关闭、CPU 尽量 light-sleep，仅维持低占空比 BLE 广播；管理员托盘点亮时经 BLE 唤醒并下发状态数据。**音频 ALDO1/ALDO2 与触摸轨不在本任务范围**（音频另有安排，触摸轨保持现状）。
+> **状态**：计划已写入，未进入实施；S0 spike 通过并确认后才开始 S1。
+
+**Files:**
+- Create: `firmware/print_screen/ble_link.cpp/.h`（GATT 服务/广播/状态收发）、`printshop/ble_link.py`（主控 BLE Central 连接管理）、`printshop/tests/test_ble_link.py`
+- Modify: `firmware/print_screen/print_screen.ino`（新增 `TRANSPORT_WIFI` / `TRANSPORT_BLE` 编译开关）、`display.cpp/.h`（面板冷启动/睡眠时序）、`axp2101_bsp.*`（仅 ALDO3 面板电源控制，**不碰 ALDO1/ALDO2 与触摸轨**）、`printshop/main.py`（ScreenTransport 组装与 on_change 推送）、`printshop/routes.py`（BLE 电池上报接入）、`printshop/requirements.txt`（+bleak/winrt）、`printshop.spec` 与 `scripts/smoke_dist.ps1`（打包验证）
+- Test: pytest（主控 BLE 抽象层）+ 固件烧录人工 checklist
+
+**物理边界（必读）**：CPU/射频完全关闭时蓝牙也关闭；"仅维持蓝牙"的工程等价形态是 **ESP32 light-sleep + 低占空比 BLE 广播**——两次广播之间 CPU 与外设休眠，BLE 控制器按广播间隔短时醒来。面板可彻底断电（`Axp2101_SetAldo3(0)` 已有现成接口），但每次唤醒需要冷启动面板。
+
+**目标架构**：
+
+```
+[Windows 主控 FastAPI + 托盘]
+   │  BLE Central（bleak / WinRT）
+   │  scan → connect → GATT write/notify
+   ▼
+[ESP32-C6 小屏]  BLE Peripheral（WiFi 关闭）
+   ● 空闲：ALDO3 面板断电、CPU light-sleep、低占空比 BLE 广播
+   ● 托盘点亮：PC 连 BLE → 写 STATE(display=on, qr_content) →
+             ALDO3 上电 → 面板冷启动 → 显示二维码
+   ● 服务中：保持 BLE 连接，主控状态变化推送 STATE，固件按现有状态机重绘
+   ● 完成服务：PC 写 display=off → 清屏 → ALDO3 断电 → 断开 → 回广播休眠
+```
+
+**BLE GATT 契约（草案）**：自定义 Service `PRINTSHOP-SCREEN`：
+
+| Characteristic | 方向 | 用途 |
+|---|---|---|
+| `screen_state`（Write） | PC → 小屏 | `{state, display, qr_content, file_count, message}`，变化即推 |
+| `battery_report`（Notify） | 小屏 → PC | 每 60s 上报 `pct/mv/charging/vbus`，主控照旧进管理页 |
+| `link_status`（Read/Notify） | 小屏 → PC | 心跳/固件版本/重连诊断 |
+
+**安全边界**：广播包只放设备名，**不放二维码内容**；QR 仅在 GATT 连接后传输。连接不配对不加密，与现有"店内 LAN 可见 qr_content"的已接受信任模型同级，写入设计文档记录。
+
+**功耗预算（待 S0 实测修正）**：
+
+| 状态 | 组成 | 预估平均电流 | 1000mAh 续航 |
+|---|---|---|---|
+| 空闲（面板断电，BLE 1s 广播 + light-sleep） | 芯片 light-sleep ~0.18mA + 广播占空 + PMU/漏电 | 约 0.5～3mA | 约 2～8 周 |
+| 空闲（若 Arduino BLE 栈无法 light-sleep，CPU 常醒） | CPU 38mA 级 + BLE | 约 8～20mA | 约 2～5 天 |
+| 服务中（面板亮 + BLE 连接） | 屏幕 + CPU + BLE | 约 60～130mA | 连续亮屏 8～16h，仅服务期间发生 |
+
+**托盘点击 → 二维码延迟预算**（广播 500ms、缓存静态地址直连、二维码未过期、沿用现有 600ms 面板初始化）：
+
+| 阶段 | 典型耗时 |
+|---|---|
+| 托盘点击 → FastAPI `wake()` 完成 | 20～50ms |
+| BLE 等待广播包（500ms 间隔） | 0～500ms（平均 250ms） |
+| BLE 建连 | 50～150ms |
+| GATT 服务发现 + 写 `screen_state` | 200～500ms |
+| ALDO3 上电 + 面板冷启动 | 600～800ms（当前最大头） |
+| 清屏 + 绘制二维码 | 50～100ms |
+| **合计** | **典型 1.5～2.5s，最坏约 3s** |
+
+- 面板初始化按数据手册从 600ms 降到 120～200ms（必须实测无花屏）后：**1.2～2s**。
+- 服务结束后保持 BLE 连接 2 分钟的"快速重醒窗口"（面板仍断电）：**约 0.8～1.2s**。
+- 二维码过期需向微信换新码：额外 0.2～1s，可与亮屏并行、不阻塞。
+- 推荐两段式：平时 500ms 广播省电；服务结束后 2 分钟保持连接覆盖连续顾客。
+
+**风险清单**：①Windows BLE 栈扫描/直连稳定性（PC 睡眠、驱动断连）；②Arduino Bluedroid 能否与 light-sleep 共存（当前 sdkconfig `CONFIG_PM_ENABLE` 未开，若电流下不去需评估 NimBLE/ESP-IDF）；③PyInstaller 打包 winrt 依赖；④部署机必须有蓝牙；⑤BLE 距离/隔板需实测；⑥唤醒延迟与广播间隔的权衡。
+
+**回滚策略**：保留 WiFi 固件二进制与源码分支；固件 `TRANSPORT_WIFI/BLE` 编译开关二选一；主控 `ScreenTransport` 抽象为 HTTP/BLE 两个实现，BLE 不稳定时一键退回 HTTP 模式。
+
+- [ ] **Step S0: BLE 可行性 spike（先做，S0 通过才继续）**
+  - [ ] 最小固件：关 WiFi、开 BLE 广播 + 可写 `screen_state`；ALDO3 断电/上电；电池 notify 最小实现
+  - [ ] PC 侧临时脚本：bleak 扫描/缓存地址直连、写 state、收 notify
+  - [ ] 测托盘点击 → 二维码全链路延迟 20 次，记录平均值/P95/最大值
+  - [ ] 用电池斜率测空闲电流（500ms/1s 广播各一档）
+  - [ ] **Go/No-go 门槛**：连接成功率 ≥90%、冷唤醒典型 ≤2.5s 且最坏 ≤3s（二维码有效时）；空闲平均电流目标 ≤3mA（若 3～10mA 提交评审后再决定）
+- [ ] **Step S1: 固件 BLE 传输落地**
+  - [ ] `TRANSPORT_BLE` 编译开关 + GATT 服务完整实现（状态/电池/心跳）
+  - [ ] 固定静态地址，主控缓存直连；广播间隔默认 500ms
+  - [ ] 面板电源状态机：ALDO3 断电 ↔ 冷启动；保留现有 DMA 同步/自愈与烧屏防护策略
+  - [ ] 服务中 BLE 状态推送重绘；主控不可达/断连显示"系统维护中"
+  - [ ] 服务结束后 2 分钟快速重醒窗口，超时断开回广播休眠
+- [ ] **Step S2: 主控 BLE 接入**
+  - [ ] `ScreenTransport` 抽象 + `printshop/ble_link.py`（扫描/缓存直连/重连/写 state/收 battery）
+  - [ ] `sm.on_change → push_state`；托盘 `/api/screen/wake` 流程打通
+  - [ ] 电池 notify 接入现有 `AppContext.update_battery` 与 WS `device` 推送
+  - [ ] `requirements.txt` 增加 `bleak`/winrt 依赖（已核实 Python 3.14 Windows wheel 可用）
+  - [ ] pytest 补 BLE 连接管理单测；HTTP `/screen` 调试页保持可用
+- [ ] **Step S3: 省电调参与实测**
+  - [ ] 面板初始化 600ms → 200/150/120ms 逐档实测，无花屏才降
+  - [ ] 广播间隔 1000/500/300ms 三档测延迟与电流，按体验/续航选档
+  - [ ] light-sleep 可行性验证；不可行则评估 NimBLE/ESP-IDF 或接受实测电流
+  - [ ] 记录三工况（空闲广播/快速重醒窗口/服务亮屏）实测电流表
+- [ ] **Step S4: 打包、长测与收尾**
+  - [ ] PyInstaller 打包 bleak/winrt，`scripts/smoke_dist.ps1` 增加 BLE 链路冒烟
+  - [ ] 24h 待机、断连恢复、扫码全链路、2h 烧屏复查
+  - [ ] 更新 `firmware/README.md`、`docs/handoff`、本计划 Step 进度与修订记录
+  - [ ] Commit：固件 BLE 改造与主控 BLE 链路分两次提交，信息待实施时定
+
+
 
 ### Task 11: 加固与恢复
 
@@ -818,10 +916,11 @@ void handleTouch() {  // CST9220 轮询读坐标即可（不必中断）→ POST
 
 - **Spec 覆盖**：§2 基线 1-7 → 无收费模块（符合）；打开文件编辑（Task 6 open/open_dir）；格式全收+标红（Task 4 classify/normalize + Task 7B 双轨转换 + Task 7 标红）；多打印机+彩色灰度（Task 7B XPS/PrintTicket + Task 7）；单队列（Task 5）；隐私红线（Task 5 finish_service + Task 9 验证）；小屏硬件+烧屏 4 条+立牌（Task 10/13）；托盘唤醒+强制换码（Task 5 wake + Task 8）。§3 流程与异常（Task 5/9/11）。§6.1/6.2 界面（Task 6/7/10）。§7 打印引擎（Task 4 骨架 + **Task 7B XPS 化返工**）。§9 数据模型（Task 3）。§10 测试策略（各任务 TDD + Task 0/7B/9 人工）。§12 里程碑 M1-M4 → Task 0 / 1-7 / 7B+8-10 / 11-13。
 - **类型一致性**：`SessionState` 常量、`screen_state()` 字段名、`PrintOptions` 字段（Task 7B 保持不变）、`JobStore` 方法名在 Task 2-10 间一致；`print_pdf(cfg, pdf, o) -> tuple[bool, str]` 签名 Task 7B 前后一致（routes.py 无感）；`WeChatClient` 接口以 vendor 实际代码为准的调整规则已在 Task 2 注明。
-- **执行顺序（2026-08-21 重编排）**：~~Task 0~~（已完成）→ Task 1-7（已完成）→ **Task 7B（打印引擎 XPS 化，Task 9 的前置）** → Task 8 → Task 9 → Task 10（可与 8/9 并行，只依赖 Task 6 契约）→ Task 11 → Task 12 → Task 13。已完成任务的编号与 brief/report/ledger 记录保持不变。
+- **执行顺序（2026-08-21 重编排，2026-08-25 追加 Task 10B）**：~~Task 0~~（已完成）→ Task 1-7（已完成）→ **Task 7B（打印引擎 XPS 化，Task 9 的前置）** → Task 8 → Task 9 → Task 10（可与 8/9 并行，只依赖 Task 6 契约）→ **Task 10B（小屏 BLE 省电改造，仅计划态，实施前需确认）** → Task 11 → Task 12 → Task 13。已完成任务的编号与 brief/report/ledger 记录保持不变。
 - **已知风险点**（执行时关注）：vendor `direct_bot.py` 的方法签名与本计划假设可能有出入（Task 2 Step 1 先核对）；`qr_content` 拼接格式以 Task 0 Step 4 实测为准（M1 已确认 `https://login.weixin.qq.com/l/{uuid}`）；固件最高发坑=**AXP2101 PMU 未初始化导致屏不亮**与**路由器 AP 隔离**（Task 10 Step 1/3 已标注）；打印三铁律（勿 show_pdf_page / Viewbox 自然尺寸 / 禁用 AddJob 用 XpsWriter，Global Constraints）；pythonnet 对 Python 3.14 兼容性未验证（Task 7B 选型决策点）。
 
 ## 修订记录
 
 - 2026-08-21（之一）：依据 esp32-c6-touch-amoled-2-16 开发板专项会话（`esp32-c6-touch-amoled-2-16.json`，含微雪 Gitee 例程仓结构核实）修订 **Task 10**：环境搭建具体化（esp32 core 3.3.x / USB CDC On Boot / XPowersLib 必装 / 驱动文件来源 09_LVGL_V9_Test 的 lcd_touch.cpp/.h+user_config.h）；初始化顺序 AXP2101→CO5300→CST9220；二维码 scale 6→9~10、反色改白底黑码；触摸唤醒改轮询；补烧录与配网步骤（BOOT 键、AP 隔离）；checklist 加 /screen 同屏对照；注明可与 Task 7/8/9 并行。联动：**文件结构段**补固件驱动文件；**Task 9** 加 Step 0 部署前置检查。
 - 2026-08-21（之二）：依据 Task 0 执行会话（`task-0.json`，147 条消息）的扩展排查定案（m1-verification §7 v2/§8/§9）修订**打印方案**：SumatraPDF 主路径废弃 → **PyMuPDF 原页渲染 → XPS 打包 → XpsDocumentWriter.Write + PrintTicket**（三铁律：勿 show_pdf_page / Viewbox 自然尺寸 / 禁用 AddJob）。**新增 Task 7B**（打印引擎 XPS 化返工，含 Config.render_dpi、Office COM/LibreOffice 双轨、图片 contain-fit、pythonnet 选型决策点、双机人工验证）；Task 4 加废弃注记（对外契约不变）；联动修订 Tech Stack / Global Constraints / 文件结构 / Task 9（前置依赖 7B + 双机回归）/ Task 12（pythonnet 打包注记）/ Self-Review 执行顺序。Task 10 不受打印方案影响，上一修订保持有效。
+- 2026-08-25（省电改造定案，仅计划未实施）：依据电池续航评估与用户决策，**新增 Task 10B「小屏 BLE 省电改造」**——小屏改为 BLE 唤醒 + BLE 数据通道，替代 WiFi/HTTP 轮询；空闲时 ALDO3 面板彻底断电、WiFi 关闭、CPU 尽量 light-sleep，仅维持低占空比 BLE 广播。明确范围：**音频 ALDO1/ALDO2 与触摸轨不在本任务范围**（音频另有安排）。含 GATT 契约、功耗预算、托盘点击→二维码延迟预算（典型 1.5～2.5s，最坏约 3s；优化后 1.2～2s；快速重醒窗口 0.8～1.2s）、S0 spike Go/No-go 门槛与 S0–S4 实施步骤。实施前需用户确认，S0 未通过不得进入 S1。
