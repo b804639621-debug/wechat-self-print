@@ -1,0 +1,152 @@
+
+=== connected ===
+[touch] 唤醒
+
+=== disconnected: ClearCommError failed (PermissionError(13, '设备不识别此命令。', None, 22)) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== disconnected: could not open port 'COM3': FileNotFoundError(2, '系统找不到指定的文件。', None, 2) ===
+
+=== connected ===
+e
+*wm:AutoConnect 
+*wm:Connecting to SAVED AP: KAIXUAN
+*wm:connectTimeout not set, ESP waitForConnectResult... 
+*wm:AutoConnect: SUCCESS 
+*wm:STA IP Address: 192.168.31.84
+[net] WiFi connected, IP=192.168.31.84
+[bat] 检测到电池
+[lcd] screen off
+[touch] 唤醒
+[lcd] screen on
+[lcd] screen off
+[touch] 唤醒
+[lcd] screen on
+
+=== connected ===
+[lcd] screen on
+[lcd] screen off
+
+=== connected ===
+[lcd] screen on
+[lcd] screen off
+[touch] 唤醒
+[lcd] screen on
+[lcd] screen off
+
+=== connected ===
+[lcd] screen on
+[lcd] screen off
+[touch] 唤醒
+[lcd] screen on
+[lcd] screen off
+[http] 主控不可达，退避重试...
+[lcd] screen on
+[lcd] screen off
+[lcd] screen on
+[http] 主控不可达，退避重试...
+[lcd] screen off
+[lcd] screen on
+[lcd] screen off
+[touch] 唤醒
+[lcd] screen on
+[lcd] screen off
+[touch] 唤醒
+[lcd] screen on
+[touch] 唤醒
+[http] 主控不可达，退避重试...
+[lcd] screen off
+[lcd] screen on
+[touch] 唤醒
+[lcd] screen off
+[lcd] screen on
+[lcd] screen off
+[http] 主控不可达，退避重试...
+[lcd] screen on
+[lcd] screen off
+[lcd] screen on
+[lcd] screen off
+[touch] 唤醒
+[lcd] screen on
+[lcd] screen off
+[lcd] screen on
+[lcd] screen off

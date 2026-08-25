@@ -9,7 +9,7 @@
  *   - WiFiManager 首次配网（AP 热点名 PRINT-SETUP）
  *   - 每 1.5s 轮询主控 GET /api/screen/state，ArduinoJson 7 解析
  *   - 状态机：IDLE 显示二维码 / SCANNED 二维码变暗 / 服务中状态画面 / 打印中
- *   - 烧屏防护 4 条：亮度 80%、无操作熄屏、二维码随机偏移、定时微移刷新
+ *   - 烧屏防护：亮度 60%、无操作/完成服务熄屏（亮屏仅在服务期间）
  *   - 触摸轮询唤醒 → POST /api/screen/wake
  *   - 电池监控：60s 读一次 AXP2101 电量计缓存，随轮询捎带 batt_* 参数上报主控
  *     （管理页显示剩余电量；无电池不上报，小屏 UI 不显示）
@@ -40,8 +40,7 @@
 #define QR_SCALE         9                   /* 二维码放大倍数（480/29≈16，留边距取 9） */
 #define QR_MAX_VERSION   7                   /* 固定 v7：45 模块*9=405px 可留页脚；v7-ECC_MEDIUM 容量 122B 足够 */
 #define QR_MAX_MODULES   (QR_MAX_VERSION * 4 + 17)
-#define PIXEL_SHIFT_MS   (60UL * 1000)       /* 烧屏防护#4：定时微移刷新 */
-#define IDLE_SLEEP_MS    (360UL * 1000)      /* 烧屏防护#3 本地兜底：6 分钟（主控 3 分钟先熄） */
+#define IDLE_SLEEP_MS    (360UL * 1000)      /* 烧屏防护 本地兜底：6 分钟（主控 3 分钟先熄） */
 #define QR_MAX_BOTTOM    456                 /* 二维码下沿上限（页脚在 460） */
 #define FOOTER_Y         460                 /* 页脚“微信扫码·传文件打印” */
 #define TEXT_Y           232                 /* 单行状态文字垂直居中位置 */
@@ -61,7 +60,6 @@ bool screenOn = false;         /* 屏当前是否点亮 */
 bool everConnected = false;    /* 是否曾成功拉到主控状态 */
 int  failCount = 0;            /* 连续失败次数（驱动退避） */
 unsigned long lastPoll = 0;
-unsigned long lastShift = 0;        /* 定时微移刷新计时 */
 unsigned long lastStateChange = 0;  /* 状态/亮屏/触摸唤醒时间（本地熄屏兜底计时） */
 
 /* 电池缓存（AXP2101 电量计直读，随轮询上报主控） */
@@ -82,7 +80,7 @@ void initPMU(void) {
 }
 
 void initDisplay(void) {
-  lcd_init(I2cMasterBus_);     /* SH8601 显示 + 背光 80%（烧屏防护#2） */
+  lcd_init(I2cMasterBus_);     /* SH8601 显示 + 背光 60% */
   Serial.println("[hw] SH8601 display init done");
 }
 
@@ -127,7 +125,7 @@ void loop(void) {
     pollScreen();
   }
 
-  /* 烧屏防护#3 本地兜底：IDLE 且长时间无变化 → 熄屏（正常由主控 display=off 驱动）。
+  /* 烧屏防护 本地兜底：IDLE 且长时间无变化 → 熄屏（正常由主控 display=off 驱动）。
    * 主控不可达（failCount>0）时让"系统维护中"常亮提示，不进入此分支。
    * 注意：必须用新鲜 millis()，不能用循环顶部的 now——pollScreen() 内 HTTP 耗时
    * 数百 ms，若期间刚亮屏更新了 lastStateChange，用旧 now 相减会无符号下溢成 ~2^32，
@@ -195,7 +193,7 @@ void pollScreen(void) {
     lastStateChange = millis();
   }
 
-  if (!dispOn) { doScreenOff(); return; }   /* 主控要求息屏（烧屏防护#3 主路径） */
+  if (!dispOn) { doScreenOff(); return; }   /* 主控要求息屏（烧屏防护 主路径） */
 
   bool wasOff = !screenOn;
   doScreenOn();
@@ -203,12 +201,12 @@ void pollScreen(void) {
 
   if (curState == "IDLE") {
     lastStatusKey = "";
-    /* 内容变化 / 刚点亮 / 定时到期 → 重绘二维码（含随机偏移） */
-    bool needRedraw = wasOff || (qr != qrShown) || (millis() - lastShift >= PIXEL_SHIFT_MS);
+    /* 内容变化 / 刚点亮 → 重绘二维码（2026-08-25 起取消定时微移重绘：亮屏仅在
+     * 服务期间、完成服务即熄屏，静画停留时间短；少重绘也压缩了花屏暴露面） */
+    bool needRedraw = wasOff || (qr != qrShown);
     if (needRedraw) {
       drawQR(qr, false);
       qrShown = qr;
-      lastShift = millis();
     }
   } else {
     /* 服务流程中保持常亮；仅状态/文件数变化时重绘，避免每 1.5s 全屏重绘 */
@@ -216,7 +214,6 @@ void pollScreen(void) {
     if (key != lastStatusKey) {
       lastStatusKey = key;
       qrShown = "";
-      lastShift = millis();
       showStatus(curState.c_str(), fc, qr);
     }
   }
@@ -252,12 +249,13 @@ void drawQR(const String& content, bool dim) {
   }
 
   int size = qrc.size * QR_SCALE;
-  /* 烧屏防护#1：绘制起点随机偏移 ±10px（同时约束静区/边界不出屏） */
-  int ox = (LCD_W - size) / 2 + random(-10, 10);
-  int oy = (LCD_H - size) / 2 + random(-10, 10) - 6;
-  if (ox < 4) ox = 4;
-  if (ox + size > LCD_W - 4) ox = LCD_W - 4 - size;
-  if (oy < 4) oy = 4;
+  /* 固定居中绘制（2026-08-25 起取消 ±10px 随机偏移：亮屏仅在服务期间、完成服务
+   * 即熄屏 + 亮度降至 60%，静画停留时间短，烧屏风险低；少重绘也压缩花屏暴露面）。
+   * x 起点强制偶数对齐：实机对照（2026-08-25）480 宽填充/文字（x0=0 偶）恒正常，
+   * 405 宽点阵 x0=37（奇）恒出现逐行右移斜纹花屏，疑 SH8601 GRAM 按 2px 粒度寻址，
+   * 奇数 x_start 触发行错位。 */
+  int ox = ((LCD_W - size) / 2) & ~1;
+  int oy = (LCD_H - size) / 2 - 6;
   if (oy + size > QR_MAX_BOTTOM) oy = QR_MAX_BOTTOM - size;
 
   uint16_t fg = dim ? LCD_COLOR_GRAY : LCD_COLOR_BLACK;   /* 变暗用 50% 灰 */
@@ -283,7 +281,15 @@ void showStatus(const char* state, int fileCount, const String& qr) {
     /* 确认引导文案渲染在页脚位置（覆盖二维码页脚，覆盖区同为 16px 高） */
     lcd_draw_text_center(FOOTER_Y, "请在手机上确认登录", LCD_COLOR_BLACK, LCD_COLOR_WHITE);
   } else if (strcmp(state, "CONNECTED") == 0) {
-    showStatusText("已连接，请发送文件");
+    /* 收完一批文件后主控回到 CONNECTED 等更多文件/店员操作（spec §8 的 READY 并入
+     * CONNECTED 实现）；此时顾客更关心"文件已收到"，fileCount>0 与 RECEIVING 同文案 */
+    if (fileCount > 0) {
+      char buf[40];
+      snprintf(buf, sizeof(buf), "已收到 %d 个文件，请稍候", fileCount);
+      showStatusText(buf);
+    } else {
+      showStatusText("已连接，请发送文件");
+    }
   } else if (strcmp(state, "RECEIVING") == 0) {
     char buf[40];
     snprintf(buf, sizeof(buf), "已收到 %d 个文件，请稍候", fileCount);

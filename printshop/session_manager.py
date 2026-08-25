@@ -70,6 +70,8 @@ class SessionManager:
         self._seen_msg_ids: set[str] = set()
         self._reconnect_failures = 0
         self._last_save_ts = time.monotonic()
+        # finish_service 与 run_loop 掉线路径（_logout_to_idle_with_fresh_qr）互斥
+        self._finish_lock = asyncio.Lock()
 
     def _notify(self) -> None:
         if self.on_change:
@@ -85,8 +87,8 @@ class SessionManager:
             self.state = new_state
             self._notify()
 
-    async def _refresh_qr(self) -> None:
-        _, self.qr_content = await self._wx.get_qr()
+    async def _refresh_qr(self, *, force: bool = False) -> None:
+        _, self.qr_content = await self._wx.get_qr(force=force)
         self._notify()
 
     async def wake(self) -> None:
@@ -94,6 +96,8 @@ class SessionManager:
             return
         self._set_display(True)
         self._last_event_ts = time.monotonic()
+        # 复用未过期码（get_qr 默认 force=False）：重复唤醒/触摸不得换码，
+        # 否则用户扫的码与轮询 uuid 错位，确认登录也检测不到
         await self._refresh_qr()
 
     async def _handle_poll(self, status: str) -> None:
@@ -126,7 +130,9 @@ class SessionManager:
             return
         if time.monotonic() - self._scanned_ts >= SCANNED_TIMEOUT_SECONDS:
             self._transition(SessionState.IDLE)
-            await self._refresh_qr()
+            # force 换新码：旧码处于"已扫待确认"(201) 态，必须作废，
+            # 复用它会让下一位顾客扫到一张已被占用、无法再次确认的码
+            await self._refresh_qr(force=True)
 
     def _check_no_file_timeout(self) -> None:
         if self.state == SessionState.CONNECTED and not self._no_file_reminder:
@@ -192,17 +198,16 @@ class SessionManager:
                 continue
             batch_seen.add(mid)
             new_msgs.append(m)
-        files = [m for m in new_msgs
-                 if not m.get("is_mine", False) and m.get("type") in ("file", "image")]
+        # 文件传输助手是"自聊"：顾客从手机发来的消息 is_mine 恒为 True（from_user 即
+        # 登录账号自身），绝不能按通用机器人惯例过滤 is_mine（2026-08-25 Task 9 实机
+        # 缺陷：全过滤导致顾客消息全灭）。本应用从不主动发消息，无自收风险。
+        files = [m for m in new_msgs if m.get("type") in ("file", "image")]
         if files:
             self._transition(SessionState.RECEIVING)
         received_any = False
         try:
             for m in new_msgs:
                 mid = m.get("id")
-                if m.get("is_mine", False):
-                    self._seen_msg_ids.add(mid)
-                    continue
                 mtype = m.get("type")
                 if mtype in ("file", "image"):
                     try:
@@ -274,7 +279,13 @@ class SessionManager:
         """登出 + 清理（inbox/work/trace 顾客产物）并归档，返回清理结果供界面告警。
 
         I3：清理失败不静默——收集失败列表、日志记录、通过 on_admin_notice 广播告警。
+        全程持 _finish_lock：与 run_loop 掉线路径互斥，避免并发嵌套收尾。
         """
+        async with self._finish_lock:
+            return await self._finish_service_locked()
+
+    async def _finish_service_locked(self) -> dict:
+        """finish_service 的无锁核心，调用方必须已持有 _finish_lock。"""
         failures: list[str] = []
         try:
             await self._wx.logout()
@@ -303,10 +314,18 @@ class SessionManager:
         return result
 
     async def _logout_to_idle_with_fresh_qr(self) -> None:
-        """登出回到 IDLE 并刷新二维码（断线重试耗尽/服务端凭证失效共用）。"""
-        await self.finish_service()
-        self._set_display(True)
-        await self._refresh_qr()
+        """登出回到 IDLE 并刷新二维码（断线重试耗尽/服务端凭证失效共用）。
+
+        与 finish_service 并发时让位：拿到锁时若状态已是 IDLE，说明管理员主动
+        收尾已完成（息屏静默），掉线路径不得再亮屏出码（2026-08-25 实机：
+        点完成服务后小屏又被并发掉线检测点亮出新码）。
+        """
+        async with self._finish_lock:
+            if self.state == SessionState.IDLE:
+                return
+            await self._finish_service_locked()
+            self._set_display(True)
+            await self._refresh_qr()
 
     async def _save_session(self) -> bool:
         try:
@@ -323,7 +342,8 @@ class SessionManager:
             pass
 
     async def restore_session(self) -> bool:
-        """启动时恢复凭证：有效→直接进服务态（免扫码）；无效/异常→保持 IDLE 正常出码。"""
+        """启动时恢复凭证：有效→直接进服务态（免扫码）；无效/异常→保持 IDLE 静默，
+        不再自动出码（uuid 空映射 wait_scan），待管理员托盘/小屏触摸唤醒时出码。"""
         try:
             ok = await self._wx.restore_session()
         except Exception:

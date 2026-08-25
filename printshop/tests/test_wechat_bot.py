@@ -1,9 +1,10 @@
 import json
+import time
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from printshop.wechat_bot import QR_CONTENT_TEMPLATE, WeChatClient
+from printshop.wechat_bot import QR_CONTENT_TEMPLATE, QR_REUSE_SECONDS, WeChatClient
 
 
 def _client(entry_host="szfilehelper.weixin.qq.com") -> WeChatClient:
@@ -17,6 +18,7 @@ async def test_get_qr_returns_image_bytes_and_content():
     c = _client()
     c._bot._jslogin_get_uuid = AsyncMock()
     c._bot.uuid = "abc123=="
+    c._bot.uuid_ts = 0.0  # 老码：越过复用窗口，必须重新 jslogin
     with patch("printshop.wechat_bot.httpx.AsyncClient") as mc:
         resp = MagicMock()
         resp.content = b"\xff\xd8\xff\xe0jpeg-bytes"
@@ -27,6 +29,70 @@ async def test_get_qr_returns_image_bytes_and_content():
     assert content == "https://login.weixin.qq.com/l/abc123=="
     c._bot._jslogin_get_uuid.assert_awaited_once()
     assert c._bot.uuid == "abc123=="
+
+
+@pytest.mark.asyncio
+async def test_get_qr_reuses_fresh_uuid_without_jslogin():
+    """wake/重复唤醒复用未过期码：不发 jslogin，返回同一内容、空字节。
+
+    回归钉死 2026-08-25 实机缺陷：重复 wake 换码导致显示码≠轮询 uuid，
+    顾客确认登录后主控永远检测不到。
+    """
+    c = _client()
+    c._bot._jslogin_get_uuid = AsyncMock()
+    c._bot.uuid = "fresh-uuid=="
+    c._bot.uuid_ts = time.time()
+    qr_bytes, content = await c.get_qr()
+    assert qr_bytes == b""
+    assert content == "https://login.weixin.qq.com/l/fresh-uuid=="
+    c._bot._jslogin_get_uuid.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_qr_force_bypasses_reuse():
+    """force=True（扫码超时作废等）即使有新鲜码也必须重新 jslogin。"""
+    c = _client()
+    c._bot.uuid = "old-uuid=="
+    c._bot.uuid_ts = time.time()
+
+    async def fake_jslogin():
+        c._bot.uuid = "new-uuid=="
+        c._bot.uuid_ts = time.time()
+
+    c._bot._jslogin_get_uuid = AsyncMock(side_effect=fake_jslogin)
+    with patch("printshop.wechat_bot.httpx.AsyncClient") as mc:
+        resp = MagicMock()
+        resp.content = b"jpeg"
+        resp.raise_for_status = MagicMock()
+        mc.return_value.__aenter__.return_value.get = AsyncMock(return_value=resp)
+        qr_bytes, content = await c.get_qr(force=True)
+    assert qr_bytes == b"jpeg"
+    assert content == "https://login.weixin.qq.com/l/new-uuid=="
+    c._bot._jslogin_get_uuid.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_qr_concurrent_calls_single_jslogin():
+    """并发 wake（托盘+小屏触摸同刻触发）：锁内双重检查，只 jslogin 一次。"""
+    import asyncio
+
+    c = _client()
+    c._bot.uuid = ""
+    c._bot.uuid_ts = 0.0
+
+    async def fake_jslogin():
+        c._bot.uuid = "shared-uuid=="
+        c._bot.uuid_ts = time.time()
+
+    c._bot._jslogin_get_uuid = AsyncMock(side_effect=fake_jslogin)
+    with patch("printshop.wechat_bot.httpx.AsyncClient") as mc:
+        resp = MagicMock()
+        resp.content = b"jpeg"
+        resp.raise_for_status = MagicMock()
+        mc.return_value.__aenter__.return_value.get = AsyncMock(return_value=resp)
+        r1, r2 = await asyncio.gather(c.get_qr(), c.get_qr())
+    assert r1[1] == r2[1] == "https://login.weixin.qq.com/l/shared-uuid=="
+    c._bot._jslogin_get_uuid.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -47,7 +113,9 @@ async def test_poll_login_maps_vendor_codes():
         (200, "confirmed"),
         (400, "expired"),
         (500, "expired"),
-        (0, "expired"),
+        # 0 = uuid 空或网络异常（direct_bot.py:521/537），非过期：
+        # 静默等下轮，不再触发换码（finish/启动后自动出码缺陷根因）
+        (0, "wait_scan"),
         (999, "wait_scan"),
     ]:
         c._bot._poll_login_once = AsyncMock(return_value=code)
@@ -242,3 +310,29 @@ async def test_logout_clears_vendor_message_cache(tmp_path):
     assert not bot._raw_by_id
     assert not bot._send_msg_ids
     assert await bot.get_latest_messages() == []
+
+
+def test_vendor_normalize_filehelper_self_chat_marks_is_mine():
+    """文件传输助手"自聊"：from=登录账号自身、to=filehelper 的消息 is_mine=True，
+    且必须保留在归一化结果中（下游不得再按 is_mine 过滤）。
+    回归钉死：2026-08-25 Task 9 实机缺陷根因（is_mine 误比较发送目标恒为 filehelper）。"""
+    from printshop.vendor.direct_bot import WeChatHelperBot
+    bot = WeChatHelperBot(entry_host="szfilehelper.weixin.qq.com")
+    bot.user_name = "@abc123"   # webwxinit 写入的登录账号 wxid
+    items = [
+        {"MsgId": "1", "FromUserName": "@abc123", "ToUserName": "filehelper",
+         "MsgType": 1, "Content": "测试"},
+        {"MsgId": "2", "FromUserName": "@abc123", "ToUserName": "filehelper",
+         "MsgType": 3, "FileName": "photo.jpg"},
+        {"MsgId": "3", "FromUserName": "@abc123", "ToUserName": "filehelper",
+         "MsgType": 49, "AppMsgType": 6, "FileName": "a.pdf"},
+        # 与 filehelper 无关的会话：被现有会话过滤器丢弃
+        {"MsgId": "4", "FromUserName": "@other", "ToUserName": "@abc123",
+         "MsgType": 1, "Content": "非filehelper会话"},
+    ]
+    out = bot._normalize_messages(items)
+    assert [m["id"] for m in out] == ["1", "2", "3"]
+    assert all(m["is_mine"] is True for m in out)
+    assert out[0]["type"] == "text" and out[0]["text"] == "测试"
+    assert out[1]["type"] == "image" and out[1]["file_name"] == "photo.jpg"
+    assert out[2]["type"] == "file" and out[2]["file_name"] == "a.pdf"

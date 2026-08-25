@@ -226,17 +226,21 @@ async def test_text_note_fires_on_note_callback():
 
 
 @pytest.mark.asyncio
-async def test_ignore_own_messages():
-    sm = SessionManager(Config(), MagicMock(), MagicMock())
+async def test_own_messages_accepted_filehelper_semantics(tmp_path):
+    """文件传输助手是"自聊"：顾客消息 is_mine 恒为 True，必须照常接收。
+    回归：2026-08-25 Task 9 实机缺陷——按 is_mine 过滤导致顾客消息全灭。"""
+    cfg = Config(); cfg.inbox_dir = tmp_path
+    sm = SessionManager(cfg, MagicMock(), MagicMock())
     sm.state = SessionState.CONNECTED
     sm._wx.fetch_messages = AsyncMock(return_value=[
         {"id": "m1", "type": "file", "file_name": "a.pdf", "is_mine": True},
         {"id": "t1", "type": "text", "text": "hi", "is_mine": True}])
-    sm._wx.download = AsyncMock()
+    sm._wx.download = AsyncMock(return_value=b"PDF")
     await sm._process_messages()
-    sm._wx.download.assert_not_awaited()
-    assert sm.file_count == 0
-    assert await sm.note_text() == ""
+    sm._wx.download.assert_awaited_once()
+    assert (tmp_path / "a.pdf").read_bytes() == b"PDF"
+    assert sm.file_count == 1
+    assert await sm.note_text() == "hi"
 
 
 @pytest.mark.asyncio

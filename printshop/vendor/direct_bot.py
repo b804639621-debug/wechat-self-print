@@ -1019,6 +1019,13 @@ class WeChatHelperBot:
             if from_user != self.to_user_name and to_user != self.to_user_name:
                 continue
 
+            # is_mine 的正确协议语义：由登录账号自身发出（FromUserName == 自己的 wxid）。
+            # 注意文件传输助手是"自聊"场景——顾客从手机发来的消息 from_user 恒等于
+            # 登录账号自身，is_mine 恒为 True，下游绝不能按通用机器人惯例过滤 is_mine，
+            # 否则顾客所有消息被全灭（2026-08-25 Task 9 实机缺陷）。
+            # 原实现误用发送目标 self.to_user_name（恒为 "filehelper"）做比较。
+            is_mine = bool(self.user_name) and from_user == self.user_name
+
             msg_type = item.get("MsgType")
             app_msg_type = item.get("AppMsgType")
 
@@ -1028,7 +1035,7 @@ class WeChatHelperBot:
                     "id": msg_id,
                     "type": "text",
                     "text": html.unescape(str(item.get("Content", ""))),
-                    "is_mine": from_user != self.to_user_name,
+                    "is_mine": is_mine,
                 }
             elif msg_type == 3:
                 normalized = {
@@ -1036,7 +1043,7 @@ class WeChatHelperBot:
                     "type": "image",
                     "text": "[Image]",
                     "file_name": item.get("FileName") or f"img_{msg_id}.jpg",
-                    "is_mine": from_user != self.to_user_name,
+                    "is_mine": is_mine,
                 }
             elif msg_type == 49 and app_msg_type == 6:
                 file_name = item.get("FileName") or f"file_{msg_id}"
@@ -1045,7 +1052,7 @@ class WeChatHelperBot:
                     "type": "file",
                     "text": f"[File: {file_name}]",
                     "file_name": file_name,
-                    "is_mine": from_user != self.to_user_name,
+                    "is_mine": is_mine,
                 }
 
             # 使用有限集合添加

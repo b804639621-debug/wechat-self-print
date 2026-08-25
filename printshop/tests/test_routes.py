@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -344,16 +344,25 @@ def test_open_dir_outside_inbox_rejected(tmp_path):
 
 
 def test_open_other_category_rejected_403(tmp_path):
-    """I5：/open 与 open_dir 对 other 类（可执行/脚本）白名单拒绝。"""
+    """I5：/open 对 other 类（可执行/脚本）白名单拒绝。"""
     app, ctx = _app(tmp_path)
     ctx.store.get.return_value = _file_job(tmp_path, path="inbox/a1.pdf", category="other")
-    with patch("os.startfile") as sf, patch("subprocess.Popen") as popen:
-        r1 = TestClient(app).post("/api/jobs/1/open")
-        r2 = TestClient(app).post("/api/jobs/1/open_dir")
-    assert r1.status_code == 403
-    assert r2.status_code == 403
+    with patch("os.startfile") as sf:
+        r = TestClient(app).post("/api/jobs/1/open")
+    assert r.status_code == 403
     sf.assert_not_called()
-    popen.assert_not_called()
+
+
+def test_open_dir_other_category_allowed(tmp_path):
+    """spec §5.2：other 类（标红文件）允许 open_dir——explorer /select 只定位不执行，
+    是标红文件的人工处理入口；路径越界防护仍由 _validate_job_path 保证。"""
+    app, ctx = _app(tmp_path)
+    _write_src(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path, category="other")
+    with patch("subprocess.Popen") as popen:
+        r = TestClient(app).post("/api/jobs/1/open_dir")
+    assert r.json() == {"ok": True}
+    popen.assert_called_once()
 
 
 def test_print_copies_above_99_rejected_422(tmp_path):

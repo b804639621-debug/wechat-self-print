@@ -57,9 +57,18 @@ def _unique_out(work_dir: Path, src: Path) -> Path:
 def _convert_with_office_com(src: Path, out: Path) -> bool:
     """Office COM（win32com, ExportAsFixedFormat）转 PDF。可用且成功返回 True。"""
     try:
+        import pythoncom
         import win32com.client
     except ImportError:
         return False
+    # 同步函数经 FastAPI anyio 线程池执行，工作线程调用 COM 前必须初始化套间，
+    # 否则 DispatchEx 抛 "CoInitialize has not been called"（2026-08-25 Task 9 实机缺陷：
+    # 表象为"未安装 Office 或 LibreOffice"，实为线程未初始化 COM）。
+    pythoncom.CoInitialize()
+    # COM 外进程服务器（WINWORD.EXE 等）按自己的 cwd 解析相对路径，与本进程 cwd 无关——
+    # 必须传绝对路径，否则打开失败（同为 2026-08-25 实机缺陷的第二层原因）。
+    src = src.resolve()
+    out = out.resolve()
     try:
         ext = src.suffix.lower()
         if ext in (".doc", ".docx"):
@@ -98,6 +107,8 @@ def _convert_with_office_com(src: Path, out: Path) -> bool:
             return False
     except Exception:
         return False
+    finally:
+        pythoncom.CoUninitialize()
     return out.exists()
 
 

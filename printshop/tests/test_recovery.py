@@ -261,6 +261,24 @@ async def test_finish_service_resets_reconnect_counter(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_logout_to_idle_yields_when_finish_already_idle(tmp_path):
+    """防回归（2026-08-25 实机）：管理员点完成服务与 run_loop 掉线检测并发时，
+    掉线路径拿到锁后见状态已 IDLE 必须让位——不得再亮屏出新码
+    （否则 finish 后小屏又被点亮，违背"完成后息屏静默"模型）。"""
+    cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
+    sm = _sm(cfg)
+    sm._wx.logout = AsyncMock()
+    sm._wx.get_qr = AsyncMock(return_value=(b"P", "https://login.weixin.qq.com/l/fresh"))
+    sm.state = SessionState.IDLE  # finish_service 已收尾
+    sm.display = False
+    await sm._logout_to_idle_with_fresh_qr()
+    assert sm.state == SessionState.IDLE
+    assert sm.display is False
+    sm._wx.get_qr.assert_not_awaited()
+    sm._wx.logout.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_periodic_save_retries_next_round_on_failure(tmp_path):
     cfg = Config(); cfg.inbox_dir = tmp_path
     sm = _sm(cfg)

@@ -583,6 +583,7 @@
       updateSelFile();
       updateSettingsButtons();
     } else {
+      updateSettingsButtons();  // 换选文件必须刷新按钮态（修复：仅 other 分支刷新导致打印键卡灰）
       loadPreview();
     }
   }
@@ -619,6 +620,9 @@
         });
       }
       return r.blob().then(function (blob) {
+        // 服务端在响应头回传总页数，省去一次 /api/jobs 刷新与二次预览渲染
+        var pc = parseInt(r.headers.get("X-Page-Count") || "0", 10);
+        if (pc > 0) { job.page_count = pc; if (S.selId === id) S.maxPage = pc; }
         var url = URL.createObjectURL(blob);
         if (S.selId !== reqJobId || S.curPage !== reqPage) {
           URL.revokeObjectURL(url);
@@ -653,9 +657,6 @@
       }
       updatePageIndicator();
       if (needReload) { needReload = false; return loadPreview(); }
-      if (job && !job.page_count && S.selId === id) {
-        return refreshJobs(true);
-      }
     });
   }
 

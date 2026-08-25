@@ -307,7 +307,9 @@ def build_router(ctx: AppContext) -> APIRouter:
             png = render_page_png(pdf, page, dpi=110)
         except Exception as exc:
             return JSONResponse(status_code=400, content={"ok": False, "error": f"渲染失败：{exc}"})
-        return Response(content=png, media_type="image/png")
+        # 回传总页数，前端免一次 /api/jobs 刷新+二次预览（预览首屏曾因此双倍渲染）
+        return Response(content=png, media_type="image/png",
+                        headers={"X-Page-Count": str(job.page_count or 0)})
 
     @router.post("/api/jobs/{job_id}/print")
     async def print_job(job_id: int, body: PrintOptionsBody):
@@ -376,9 +378,8 @@ def build_router(ctx: AppContext) -> APIRouter:
         job = store.get(job_id)
         if job is None:
             return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
-        if job.category == "other":
-            return JSONResponse(status_code=403,
-                                content={"ok": False, "error": "该文件类型不支持打开目录（other 类禁止）"})
+        # other 类允许 open_dir：explorer /select 只定位不执行，是 spec §5.2 标红文件的
+        # 人工处理入口（/open 才真正执行文件，仍对 other 类 403）。路径越界防护不变。
         try:
             target = _validate_job_path(cfg, job.file_path)
         except FileNotFoundError as exc:

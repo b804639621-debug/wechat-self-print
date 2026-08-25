@@ -20,8 +20,9 @@
 #define LCD_COLOR_GRAY    0x8410   /* 50% 灰（二维码“变暗”用） */
 #define LCD_COLOR_RED     0xF800
 
-/* 烧屏防护#2：亮度上限 80%（初始化时设置一次） */
-#define LCD_BACKLIGHT_PCT 80
+/* 亮度 60%（初始化时设置一次）：亮屏仅在服务期间、完成服务即熄屏，
+ * 静画停留时间短，60% 亮度下烧屏风险低（2026-08-25 由 80% 下调，替代像素平移方案） */
+#define LCD_BACKLIGHT_PCT 60
 
 #define LCD_W 480
 #define LCD_H 480
@@ -53,7 +54,7 @@ void lcd_draw_text(int x, int y, const char* s, uint16_t fg, uint16_t bg);
 /* 水平居中绘制一行文本 */
 void lcd_draw_text_center(int y, const char* s, uint16_t fg, uint16_t bg);
 
-/* 烧屏防护#3：全黑填充 + DISPOFF（AMOLED 黑像素不发光，物理等效息屏） */
+/* 息屏：全黑填充 + DISPOFF（AMOLED 黑像素不发光，物理等效息屏） */
 void lcd_screen_off(void);
 
 /* 恢复显示（DISPOFF 之前写入的内容会直接显示） */

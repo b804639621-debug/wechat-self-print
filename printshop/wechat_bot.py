@@ -1,34 +1,51 @@
 """微信文件传输助手网页版协议适配层。包装 vendor/direct_bot.py，对上层屏蔽细节。"""
+import asyncio
+import logging
+import os
 import tempfile
+import time
 from pathlib import Path
 
 import httpx
 
 from printshop.vendor.direct_bot import WeChatHelperBot
 
+_log = logging.getLogger("printshop.wechat_bot")
+
 # 以 M1 实测为准（docs/m1-verification.md）：uuid 为 base64 风格字符串（可含 "="）
 QR_CONTENT_TEMPLATE = "https://login.weixin.qq.com/l/{uuid}"
 
 # vendor _poll_login_once() 实际返回 int 状态码
+# 0 的含义是"uuid 为空"或"本次请求网络异常"（direct_bot.py:521/537），并非码过期：
+# 必须映射 wait_scan 静默等下轮。若按 expired 处理，finish_service/启动后 uuid 被清空时
+# run_loop 会在无人亮屏的情况下反复 jslogin 自动出码（违背"息屏待唤醒"模型），且与
+# wake 并发换码会造成显示码≠轮询码（2026-08-25 实机"扫码确认后检测不到登录"根因）。
 _LOGIN_CODE_STATUS = {
     408: "wait_scan",
     201: "scanned",
     200: "confirmed",
     400: "expired",
     500: "expired",
-    0: "expired",
+    0: "wait_scan",
 }
+
+# 码复用窗口：vendor 以 240s 判 uuid 过期（direct_bot.py:248），留 60s 余量，
+# 避免复用一张即将过期的码（用户扫到一半码被判 400）。
+QR_REUSE_SECONDS = 180
 
 
 class WeChatClient:
     def __init__(self, entry_host: str = "szfilehelper.weixin.qq.com"):
         self.entry_host = entry_host
         self._bot = WeChatHelperBot(entry_host=entry_host)
+        # get_qr 并发互斥：托盘/小屏唤醒与 run_loop 换码可能同刻触发，锁内双重检查
+        # 保证并发唤醒只产生一次 jslogin（显示码与轮询 uuid 不错位）
+        self._qr_lock = asyncio.Lock()
         # I4：本项目强制默认关闭 HTTP trace（vendor 默认开）。trace 会把顾客昵称/备注/
-        # 文件名写进 trace_logs/*.jsonl，属 PII。此处无条件置 False——vendor 读环境变量的
-        # 开关在此被覆盖，如需启用请改此行为显式读取环境变量（如 WECHAT_TRACE_ENABLED），
-        # 且 logout 已配套清理 trace_logs 目录。
-        self._bot.trace_enabled = False
+        # 文件名写进 trace_logs/*.jsonl，属 PII。默认无条件置 False；仅排障时可显式设
+        # 环境变量 WECHAT_TRACE_ENABLED=1 临时开启，用后须清理 trace_logs 目录
+        # （logout 已配套自动清理）。
+        self._bot.trace_enabled = os.environ.get("WECHAT_TRACE_ENABLED") == "1"
 
     @property
     def trace_dir(self) -> Path:
@@ -39,17 +56,27 @@ class WeChatClient:
         if self._bot.client is None:
             await self._bot.start()
 
-    async def get_qr(self) -> tuple[bytes, str]:
-        """返回 (二维码图片字节, 二维码内容字符串)。字节实际为 JPEG 编码，勿假定 PNG。"""
+    async def get_qr(self, force: bool = False) -> tuple[bytes, str]:
+        """返回 (二维码图片字节, 二维码内容字符串)。字节实际为 JPEG 编码，勿假定 PNG。
+
+        force=False 且现有 uuid 年龄 < QR_REUSE_SECONDS 时复用当前码（不发 jslogin、
+        返回空字节）：wake/重复唤醒必须复用同一张码，否则用户扫的码与主控轮询的
+        uuid 错位，确认登录后主控永远检测不到。force=True（扫码超时作废等）或无码/
+        码老时重新 jslogin。
+        """
         await self._ensure_started()
-        await self._bot._jslogin_get_uuid()
-        uuid = self._bot.uuid
-        if not uuid:
-            raise RuntimeError("获取登录二维码 uuid 失败")
-        async with httpx.AsyncClient(timeout=15) as cli:
-            resp = await cli.get(f"https://login.weixin.qq.com/qrcode/{uuid}")
-            resp.raise_for_status()
-        return resp.content, QR_CONTENT_TEMPLATE.format(uuid=uuid)
+        async with self._qr_lock:
+            bot = self._bot
+            if not force and bot.uuid and (time.time() - bot.uuid_ts) < QR_REUSE_SECONDS:
+                return b"", QR_CONTENT_TEMPLATE.format(uuid=bot.uuid)
+            await bot._jslogin_get_uuid()
+            uuid = bot.uuid
+            if not uuid:
+                raise RuntimeError("获取登录二维码 uuid 失败")
+            async with httpx.AsyncClient(timeout=15) as cli:
+                resp = await cli.get(f"https://login.weixin.qq.com/qrcode/{uuid}")
+                resp.raise_for_status()
+            return resp.content, QR_CONTENT_TEMPLATE.format(uuid=uuid)
 
     async def poll_login(self) -> str:
         await self._ensure_started()
