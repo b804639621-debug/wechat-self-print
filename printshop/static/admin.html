@@ -415,7 +415,9 @@
     $("reminder-bar").classList.toggle("show", !!data.no_file_reminder);
   }
 
-  // 小屏电池指示：<20% 红色（充电中不红）；>3 分钟未上报置灰（兼作板子在线指示）
+  // 小屏电池指示：<20% 红色（充电中不红）；超过阈值未上报置灰（兼作板子在线指示）。
+  // 阈值由后端下发（stale_after）：BLE 空闲期靠周期心跳上报（heartbeat+300s 余量），
+  // WiFi 轮询为 60s 节奏的既有 180s；无字段时按 180 兜底。
   function renderDevice() {
     var el = $("device-batt");
     var b = S.battery;
@@ -428,7 +430,8 @@
     var stale = true;
     if (b.updated_at) {
       var age = (Date.now() - new Date(b.updated_at).getTime()) / 1000;
-      stale = !(age >= 0 && age <= 180);
+      var staleAfter = b.stale_after || 180;
+      stale = !(age >= 0 && age <= staleAfter);
     }
     var text = "🔋 " + b.pct + "%";
     if (b.charging) text += "·充电中";

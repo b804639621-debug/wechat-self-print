@@ -8,3 +8,6 @@ pywin32
 pystray
 pytest
 pytest-asyncio
+winrt-Windows.Devices.Bluetooth
+winrt-Windows.Devices.Bluetooth.GenericAttributeProfile
+winrt-Windows.Storage.Streams

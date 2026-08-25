@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from printshop.ble_link import BleScreenLink
 from printshop.config import Config
 from printshop.jobs import JobStore
 from printshop.routes import AppContext, _is_loopback_host, build_router
@@ -46,6 +47,11 @@ def _is_admin_path(path: str) -> bool:
 async def _lifespan(ctx: AppContext):
     ctx.loop = asyncio.get_running_loop()
     loop_task = asyncio.create_task(ctx.sm.run_loop())
+    if ctx.ble is not None:
+        try:
+            ctx.ble.start()
+        except Exception:
+            _log.exception("BLE 链路启动失败")
     if ctx.wx is not None:
         try:
             await ctx.sm.restore_session()
@@ -59,6 +65,11 @@ async def _lifespan(ctx: AppContext):
             await loop_task
         except (asyncio.CancelledError, Exception):
             pass
+        if ctx.ble is not None:
+            try:
+                await ctx.ble.stop()
+            except Exception:
+                _log.exception("BLE 链路停止失败")
         await _shutdown_cleanup(ctx)
 
 
@@ -82,7 +93,22 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
     wx = wx or WeChatClient()
     sm = SessionManager(cfg, wx, store)
     ctx = AppContext(cfg=cfg, store=store, wx=wx, sm=sm)
-    sm.on_change = lambda: ctx.emit("session", **sm.screen_state())
+
+    # 小屏 BLE Central 链路（空地址=禁用，回滚 WiFi 轮询）；ctx 先构造再后置赋值
+    ble = None
+    if cfg.screen_ble_address:
+        def on_ble_battery(report: dict) -> None:
+            if ctx.update_battery(report):
+                ctx.emit("device", battery=ctx.battery_payload())
+        ble = BleScreenLink(cfg, on_battery=on_ble_battery)
+    ctx.ble = ble
+
+    def on_change() -> None:
+        state = sm.screen_state()
+        ctx.emit("session", **state)
+        if ble is not None:
+            ble.push_state(state)
+    sm.on_change = on_change
     sm.on_note = lambda: ctx.emit("note", text=sm.screen_state()["message"])
     sm.on_admin_notice = lambda kind, text: ctx.emit(kind, text=text)
     store.on_job_added = lambda jid: ctx.emit("new_job", id=jid)

@@ -78,11 +78,12 @@ class PrintBatchBody(BaseModel):
 class AppContext:
     """路由共享上下文：配置、数据层、会话状态机、WS 客户端集与广播。"""
 
-    def __init__(self, cfg, store, wx, sm):
+    def __init__(self, cfg, store, wx, sm, ble=None):
         self.cfg = cfg
         self.store = store
         self.wx = wx
         self.sm = sm
+        self.ble = ble  # BleScreenLink（None=BLE 禁用，WiFi 轮询回滚路径）
         self.loop: asyncio.AbstractEventLoop | None = None
         self.clients: set[WebSocket] = set()
         # 小屏电池最近一次上报（固件轮询 /api/screen/state 时捎带 batt_* 参数），空 = 未上报
@@ -99,7 +100,14 @@ class AppContext:
         return old_key != (report["pct"], report["charging"], report["vbus"])
 
     def battery_payload(self) -> dict | None:
-        return dict(self.device) if self.device else None
+        if not self.device:
+            return None
+        payload = dict(self.device)
+        # 置灰阈值随上报通道走：BLE 空闲期靠周期心跳（heartbeat 间隔 + 300s 余量），
+        # WiFi 轮询为 60s 节奏的既有 180s 阈值；admin.html 用 b.stale_after 置灰。
+        payload["stale_after"] = (int(self.cfg.ble_heartbeat_seconds) + 300
+                                  if self.ble is not None else 180)
+        return payload
 
     def emit(self, msg_type: str, **payload) -> None:
         data = {"type": msg_type}
