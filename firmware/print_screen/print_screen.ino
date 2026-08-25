@@ -4,13 +4,14 @@
  * 板子：微雪 ESP32-C6-Touch-AMOLED-2.16
  *   - AXP2101 PMU（XPowersLib）  ：屏供电，必须先初始化，否则屏不亮
  *   - SH8601 显示（esp_lcd）     ：显示驱动在 display.cpp，无 LVGL 直绘
- *   - CST9220 触摸（lcd_touch）  ：I2C 轮询，用于“触摸唤醒”
+ *   - CST9220 触摸：已停用（2026-08-25 决策：放弃触摸唤醒，不再初始化）
  * 功能：
  *   - WiFiManager 首次配网（AP 热点名 PRINT-SETUP）
  *   - 每 1.5s 轮询主控 GET /api/screen/state，ArduinoJson 7 解析
  *   - 状态机：IDLE 显示二维码 / SCANNED 二维码变暗 / 服务中状态画面 / 打印中
  *   - 烧屏防护：亮度 60%、无操作/完成服务熄屏（亮屏仅在服务期间）
- *   - 触摸轮询唤醒 → POST /api/screen/wake
+ *   - 唤醒入口：仅管理员托盘点亮（POST /api/screen/wake）；
+ *     触摸唤醒 2026-08-25 起放弃（Task 10B 决策：BLE 改造后触摸不可用，现役固件同步去除）
  *   - 电池监控：60s 读一次 AXP2101 电量计缓存，随轮询捎带 batt_* 参数上报主控
  *     （管理页显示剩余电量；无电池不上报，小屏 UI 不显示）
  * 依赖库（Arduino 库管理器）：WiFiManager、ArduinoJson(v7)、
@@ -26,7 +27,6 @@
 #include <ArduinoJson.h>
 #include "./src/ricmoo_qrcode/qrcode.h"     /* ricmoo/QRCode（vendored 副本：esp32 core 3.3.x 内置同名 qrcode.h 会抢占） */
 #include "user_config.h"
-#include "lcd_touch.h"
 #include "display.h"
 #include "./src/port_bsp/i2c_bsp.h"
 #include "./src/port_bsp/axp2101_bsp.h"
@@ -45,11 +45,10 @@
 #define FOOTER_Y         460                 /* 页脚“微信扫码·传文件打印” */
 #define TEXT_Y           232                 /* 单行状态文字垂直居中位置 */
 #define MAINT_SHIFT_MS   (30UL * 1000)       /* 维护态白字防烧屏：每 30s 换一次绘制位置 */
-#define BATT_READ_INTERVAL_MS (60UL * 1000)  /* 电池缓存读取间隔（电量变化慢，不挤占 I2C 显示/触摸） */
+#define BATT_READ_INTERVAL_MS (60UL * 1000)  /* 电池缓存读取间隔（电量变化慢，I2C 与 PMU 共总线不宜高频） */
 
 /* ============================ 全局状态 ============================ */
 I2cMasterBus I2cMasterBus_(GPIO_NUM_7, GPIO_NUM_8, I2C_NUM_0); /* 引脚见 user_config.h */
-LcdTouchPanel* touch_dev = NULL;
 
 String curState = "";          /* 主控下发的状态（IDLE/SCANNED/...） */
 String qrShown = "";           /* 最近一次绘制的二维码内容 */
@@ -60,7 +59,7 @@ bool screenOn = false;         /* 屏当前是否点亮 */
 bool everConnected = false;    /* 是否曾成功拉到主控状态 */
 int  failCount = 0;            /* 连续失败次数（驱动退避） */
 unsigned long lastPoll = 0;
-unsigned long lastStateChange = 0;  /* 状态/亮屏/触摸唤醒时间（本地熄屏兜底计时） */
+unsigned long lastStateChange = 0;  /* 状态/亮屏时间（本地熄屏兜底计时） */
 
 /* 电池缓存（AXP2101 电量计直读，随轮询上报主控） */
 int  battPct = -1;                  /* 电量百分比（-1=未读到） */
@@ -84,18 +83,12 @@ void initDisplay(void) {
   Serial.println("[hw] SH8601 display init done");
 }
 
-void initTouch(void) {
-  touch_dev = new LcdTouchPanel(I2cMasterBus_, 0x5A);  /* CST9220 @ 0x5A */
-  Serial.println("[hw] CST9220 touch init done");
-}
-
 void setup(void) {
   Serial.begin(115200);
   delay(500);                  /* USB CDC 枚举等待，避免首行日志丢失 */
 
   initPMU();                   /* ① 电源：不初始化屏不会亮（最高发坑） */
-  initDisplay();               /* ② 显示 */
-  initTouch();                 /* ③ 触摸 */
+  initDisplay();               /* ② 显示（触摸 CST9220 已停用，不再初始化） */
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);        /* 保持 WiFi 活跃，轮询不抖动 */
@@ -115,7 +108,6 @@ void setup(void) {
 /* ============================ 主循环 ============================ */
 
 void loop(void) {
-  handleTouch();               /* 触摸轮询唤醒（每次循环） */
   updateBatteryCache();        /* 电池缓存：60s 读一次 PMU（内部有间隔守卫） */
 
   unsigned long now = millis();
@@ -138,7 +130,7 @@ void loop(void) {
 
 /* ==================== 电池监控 ==================== */
 
-/* 60s 读一次 AXP2101 缓存到全局（电量变化慢；I2C 与显示/触摸共总线，不宜高频）。
+/* 60s 读一次 AXP2101 缓存到全局（电量变化慢；I2C 与 PMU 共总线，不宜高频）。
  * lastBattRead=0 时首次必读（开机首轮轮询即可上报）。 */
 void updateBatteryCache(void) {
   unsigned long now = millis();
@@ -342,30 +334,4 @@ void doScreenOn(void) {
   screenOn = true;
   lcd_screen_on();
   Serial.println("[lcd] screen on");
-}
-
-/* ============================ 触摸唤醒 ============================ */
-
-void handleTouch(void) {
-  static uint8_t prevPressed = 0;
-  uint16_t x = 0, y = 0;
-  uint8_t pressed = (touch_dev && touch_dev->GetCoords(&x, &y)) ? 1 : 0;
-  if (pressed && !prevPressed) {            /* 边沿触发，避免重复上报 */
-    Serial.println("[touch] 唤醒");
-    httpPostWake();                         /* 上报主控刷新二维码并点亮 */
-    doScreenOn();
-    lastStateChange = millis();
-    qrShown = "";                           /* 强制下次轮询重绘 */
-  }
-  prevPressed = pressed;
-}
-
-void httpPostWake(void) {
-  String url = "http://" + String(SERVER_IP) + ":" + String(SERVER_PORT) + "/api/screen/wake";
-  HTTPClient http;
-  if (!http.begin(url.c_str())) return;
-  http.setConnectTimeout(1000);
-  http.setTimeout(1000);
-  http.POST("");                            /* 非阻塞式：忽略结果 */
-  http.end();
 }

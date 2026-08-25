@@ -10,11 +10,11 @@
 
 | 文件 | 说明 |
 |---|---|
-| `print_screen.ino` | 主程序：配网、轮询主控、状态机、二维码、烧屏防护、触摸唤醒 |
+| `print_screen.ino` | 主程序：配网、轮询主控、状态机、二维码、烧屏防护（**触摸唤醒已于 2026-08-25 停用**，唤醒仅托盘 POST /api/screen/wake） |
 | `display.h/.cpp` | **本项目自写**：无 LVGL 的显示驱动封装（esp_lcd 直绘 fillRect/点阵/文本） |
-| `lcd_touch.cpp/.h` | 微雪例程原样复制（CST9220 触摸） |
+| `lcd_touch.cpp/.h` | 微雪例程原样复制（CST9220 触摸；**2026-08-25 起停用**，保留文件备查，主程序不再 include） |
 | `user_config.h` | 微雪例程原样复制（引脚/显示参数，勿改引脚号） |
-| `src/port_bsp/` | 微雪例程复制：`i2c_bsp`（I2C 总线，lcd_touch 依赖）、`axp2101_bsp`（PMU，含一处编译修复 + 项目自有电池读取扩展，见 §九） |
+| `src/port_bsp/` | 微雪例程复制：`i2c_bsp`（I2C 总线，PMU 使用）、`axp2101_bsp`（PMU，含一处编译修复 + 项目自有电池读取扩展，见 §九） |
 | `src/externLib/` | 微雪例程复制：`esp_lcd_sh8601.c/.h`（SH8601 显示驱动，display.cpp 依赖） |
 | `src/ricmoo_qrcode/` | ricmoo/QRCode 库**随 sketch  vendored**（qrcode.c/.h）：esp32 core 3.3.x 内置 `espressif__qrcode` 组件的同名头文件会抢占库管理器安装的 QRCode，导致编不过；vendored 后 include 走相对路径 `./src/ricmoo_qrcode/qrcode.h`，不再依赖库管理器安装 |
 | `fonts.h` | 16×16 单色点阵字库（覆盖全部界面文案），由 `gen_font.py` 生成 |
@@ -78,7 +78,7 @@ arduino-cli upload -p COM3 --fqbn $fqbn --input-dir C:\arduino-build\print_scree
 1. USB-C 直连电脑（C6 原生 USB，无需串口驱动），选对应 COM 口 → 点“上传”。
 2. 上传失败 / 认不出端口 → **按住板子侧边 BOOT 键再重新上电**进入下载模式，再正常上传。
 3. 烧完开串口监视器（115200）看日志；无输出先查 **USB CDC On Boot 是否 Enabled**。
-4. 期望日志顺序：`[hw] AXP2101 PMU init done` → `[hw] SH8601 display init done` → `[hw] CST9220 touch init done` → `[net] WiFi connected, IP=...`。
+4. 期望日志顺序：`[hw] AXP2101 PMU init done` → `[hw] SH8601 display init done` → `[net] WiFi connected, IP=...`（2026-08-25 起无 `[hw] CST9220 touch init done`，触摸已停用）。
 
 ## 五、首次配网流程
 
@@ -128,7 +128,7 @@ arduino-cli upload -p COM3 --fqbn $fqbn --input-dir C:\arduino-build\print_scree
   充电中（`isCharging`）、USB 接入（`isVbusIn`）。`axp2101_bsp.cpp` 末尾的两个函数
   （`Axp2101_EnableBatteryMonitor` / `Axp2101_ReadBattery`）是**项目自有扩展**，与上方例程原样复制部分有注释分隔；
   `initPMU()` 里先开电池电压 ADC 才能读 mV。
-- **节奏**：`updateBatteryCache()` 每 60s 读一次 PMU 缓存（I2C 与显示/触摸共总线，不宜高频）；
+- **节奏**：`updateBatteryCache()` 每 60s 读一次 PMU 缓存（I2C 与 PMU 共总线，不宜高频）；
   上报则随每 1.5s 的 `GET /api/screen/state` 捎带 query 参数，不新增 HTTP 请求。无电池（`isBatteryConnect`=false）不追加参数。
 - **参数契约**（主控 `routes.py` 宽容解析，任一字段非法则整体忽略，绝不影响状态响应）：
 
