@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -84,6 +85,21 @@ class AppContext:
         self.sm = sm
         self.loop: asyncio.AbstractEventLoop | None = None
         self.clients: set[WebSocket] = set()
+        # 小屏电池最近一次上报（固件轮询 /api/screen/state 时捎带 batt_* 参数），空 = 未上报
+        self.device: dict = {}
+
+    def update_battery(self, report: dict) -> bool:
+        """存入电池上报；返回 True = 值得广播的变化（首次或 pct/充电态/USB态 变化）。
+
+        电压(mV)随测量抖动，不参与变化判定，但最新值照常落库。
+        """
+        old = self.device
+        old_key = (old.get("pct"), old.get("charging"), old.get("vbus")) if old else None
+        self.device = report
+        return old_key != (report["pct"], report["charging"], report["vbus"])
+
+    def battery_payload(self) -> dict | None:
+        return dict(self.device) if self.device else None
 
     def emit(self, msg_type: str, **payload) -> None:
         data = {"type": msg_type}
@@ -147,6 +163,39 @@ def _validate_job_path(cfg, file_path: str) -> Path:
     if not (resolved.is_relative_to(inbox) or resolved.is_relative_to(work)):
         raise PermissionError("路径越界，禁止操作")
     return resolved
+
+
+def _parse_battery_report(pct: str | None, mv: str | None,
+                          chg: str | None, vbus: str | None) -> dict | None:
+    """解析小屏轮询捎带的电量 query 参数；无上报或任一字段非法 → None（整体忽略）。
+
+    宽容解析（声明 str 而非 int）：参数畸形也绝不能把小屏的状态轮询打成 422。
+    """
+    if pct is None:
+        return None
+
+    def _int(s: str | None) -> int | None:
+        try:
+            return int(s) if s is not None else None
+        except ValueError:
+            return None
+
+    p, m, c, v = _int(pct), _int(mv), _int(chg), _int(vbus)
+    if p is None or not (0 <= p <= 100):
+        return None
+    if mv is not None and (m is None or not (0 <= m <= 5000)):
+        return None
+    if chg is not None and c not in (0, 1):
+        return None
+    if vbus is not None and v not in (0, 1):
+        return None
+    return {
+        "pct": p,
+        "mv": m or 0,
+        "charging": bool(c),
+        "vbus": bool(v),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 def build_router(ctx: AppContext) -> APIRouter:
@@ -220,8 +269,13 @@ def build_router(ctx: AppContext) -> APIRouter:
         return {"ok": ok, "error": "" if ok else error}
 
     @router.get("/api/screen/state")
-    async def screen_state():
-        return sm.screen_state()
+    async def screen_state(batt_pct: str | None = None, batt_mv: str | None = None,
+                           batt_chg: str | None = None, batt_vbus: str | None = None):
+        """小屏轮询主状态；固件捎带 batt_* 电量参数时更新设备电量（变化时广播 device）。"""
+        report = _parse_battery_report(batt_pct, batt_mv, batt_chg, batt_vbus)
+        if report is not None and ctx.update_battery(report):
+            ctx.emit("device", battery=ctx.battery_payload())
+        return {**sm.screen_state(), "battery": ctx.battery_payload()}
 
     @router.post("/api/screen/wake")
     async def screen_wake():
@@ -352,6 +406,10 @@ def build_router(ctx: AppContext) -> APIRouter:
         try:
             await ws.send_text(
                 json.dumps({"type": "session", **sm.screen_state()}, ensure_ascii=False))
+            # 电量快照紧随 session：管理页打开即有电池指示（未上报时 battery 为 null）
+            await ws.send_text(
+                json.dumps({"type": "device", "battery": ctx.battery_payload()},
+                           ensure_ascii=False))
             while True:
                 await ws.receive_text()
         except WebSocketDisconnect:

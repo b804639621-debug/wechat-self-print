@@ -17,3 +17,8 @@ void Custom_PmicPortInit(I2cMasterBus *i2cbus, uint8_t dev_addr);
 
 void Axp2101_SetAldo2(uint8_t vol);
 void Axp2101_SetAldo3(uint8_t vol);
+
+/* ==================== 以下为项目自有扩展（非例程原样复制） ====================
+ * 电池电量读取（2026-08 装机电池后新增，供主控管理页显示剩余电量）。 */
+void Axp2101_EnableBatteryMonitor(void);                       /* 开机调一次：开电池电压 ADC */
+bool Axp2101_ReadBattery(int *pct, int *mv, bool *charging, bool *vbus);  /* 无电池返回 false */

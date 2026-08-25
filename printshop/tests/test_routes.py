@@ -480,6 +480,7 @@ def test_ws_admin_broadcasts_on_change(tmp_path):
     with TestClient(app) as c:
         with c.websocket_connect("/ws/admin") as ws:
             ws.receive_json()  # 初始 session
+            ws.receive_json()  # 初始 device 快照
             ctx.sm.display = True
             ctx.sm.on_change()
             msg = ws.receive_json()
@@ -491,7 +492,8 @@ def test_ws_admin_new_job_via_store_hook(tmp_path):
     app, ctx = _app(tmp_path)
     with TestClient(app) as c:
         with c.websocket_connect("/ws/admin") as ws:
-            ws.receive_json()
+            ws.receive_json()  # 初始 session
+            ws.receive_json()  # 初始 device 快照
             ctx.store.on_job_added(7)
             msg = ws.receive_json()
     assert msg == {"type": "new_job", "id": 7}
@@ -503,6 +505,7 @@ def test_ws_note_event_on_note_change(tmp_path):
     with TestClient(app) as c:
         with c.websocket_connect("/ws/admin") as ws:
             ws.receive_json()  # 初始 session
+            ws.receive_json()  # 初始 device 快照
             ctx.sm.on_note()
             msg = ws.receive_json()
     assert msg == {"type": "note", "text": "打印3份"}
@@ -528,3 +531,73 @@ def test_print_broadcasts_job_update(tmp_path):
     assert msg is not None
     assert msg["id"] == 1
     assert msg["status"] == JobStatus.DONE
+
+
+def test_screen_state_battery_null_without_report(tmp_path):
+    """固件未上报电量（旧固件/无电池）时 battery 字段为 null。"""
+    app, _ = _app(tmp_path)
+    r = TestClient(app).get("/api/screen/state")
+    assert r.status_code == 200
+    assert r.json()["battery"] is None
+
+
+def test_screen_state_battery_report_roundtrip(tmp_path):
+    """固件轮询捎带电量参数 → 当次及后续响应携带 battery。"""
+    app, _ = _app(tmp_path)
+    c = TestClient(app)
+    r = c.get("/api/screen/state",
+              params={"batt_pct": 85, "batt_mv": 4105, "batt_chg": 1, "batt_vbus": 1})
+    assert r.status_code == 200
+    batt = r.json()["battery"]
+    assert batt["pct"] == 85
+    assert batt["mv"] == 4105
+    assert batt["charging"] is True
+    assert batt["vbus"] is True
+    assert batt["updated_at"]
+    # 后续无参轮询仍保留最后一次上报
+    r = c.get("/api/screen/state")
+    assert r.json()["battery"]["pct"] == 85
+
+
+def test_screen_state_battery_invalid_params_ignored(tmp_path):
+    """非法电量参数整体忽略且不影响状态响应（小屏轮询契约不能被打挂）。"""
+    app, _ = _app(tmp_path)
+    c = TestClient(app)
+    for params in ({"batt_pct": 101}, {"batt_pct": -1}, {"batt_mv": 99999},
+                   {"batt_chg": 3}, {"batt_vbus": "x"}, {"batt_pct": "abc"}):
+        r = c.get("/api/screen/state", params=params)
+        assert r.status_code == 200
+        assert r.json()["battery"] is None
+        assert r.json()["state"] == SessionState.CONNECTED
+
+
+def test_battery_update_change_detection(tmp_path):
+    """仅 百分比/充电态/USB态 变化才值得广播（电压抖动不推）。"""
+    app, ctx = _app(tmp_path)
+    r1 = {"pct": 85, "mv": 4105, "charging": True, "vbus": True, "updated_at": "t1"}
+    r2 = {"pct": 85, "mv": 4110, "charging": True, "vbus": True, "updated_at": "t2"}
+    r3 = {"pct": 84, "mv": 4110, "charging": True, "vbus": True, "updated_at": "t3"}
+    r4 = {"pct": 84, "mv": 4110, "charging": False, "vbus": True, "updated_at": "t4"}
+    assert ctx.update_battery(r1) is True    # 首次上报
+    assert ctx.update_battery(r2) is False   # 仅电压抖动
+    assert ctx.update_battery(r3) is True    # 百分比变化
+    assert ctx.update_battery(r4) is True    # 充电状态变化
+    assert ctx.battery_payload()["mv"] == 4110  # 抖动值也已落库，只是不广播
+
+
+def test_ws_admin_device_snapshot_and_change_push(tmp_path):
+    """WS 连接即收 device 快照；电量变化时推送 device 消息。"""
+    app, ctx = _app(tmp_path)
+    with TestClient(app) as c:
+        c.get("/api/screen/state", params={"batt_pct": 85, "batt_chg": 1})
+        with c.websocket_connect("/ws/admin") as ws:
+            msg = ws.receive_json()
+            assert msg["type"] == "session"
+            msg = ws.receive_json()
+            assert msg["type"] == "device"
+            assert msg["battery"]["pct"] == 85
+            assert msg["battery"]["charging"] is True
+            c.get("/api/screen/state", params={"batt_pct": 80, "batt_chg": 1})
+            msg = ws.receive_json()
+            assert msg["type"] == "device"
+            assert msg["battery"]["pct"] == 80

@@ -14,7 +14,7 @@
 | `display.h/.cpp` | **本项目自写**：无 LVGL 的显示驱动封装（esp_lcd 直绘 fillRect/点阵/文本） |
 | `lcd_touch.cpp/.h` | 微雪例程原样复制（CST9220 触摸） |
 | `user_config.h` | 微雪例程原样复制（引脚/显示参数，勿改引脚号） |
-| `src/port_bsp/` | 微雪例程复制：`i2c_bsp`（I2C 总线，lcd_touch 依赖）、`axp2101_bsp`（PMU，含一处编译修复） |
+| `src/port_bsp/` | 微雪例程复制：`i2c_bsp`（I2C 总线，lcd_touch 依赖）、`axp2101_bsp`（PMU，含一处编译修复 + 项目自有电池读取扩展，见 §九） |
 | `src/externLib/` | 微雪例程复制：`esp_lcd_sh8601.c/.h`（SH8601 显示驱动，display.cpp 依赖） |
 | `src/ricmoo_qrcode/` | ricmoo/QRCode 库**随 sketch  vendored**（qrcode.c/.h）：esp32 core 3.3.x 内置 `espressif__qrcode` 组件的同名头文件会抢占库管理器安装的 QRCode，导致编不过；vendored 后 include 走相对路径 `./src/ricmoo_qrcode/qrcode.h`，不再依赖库管理器安装 |
 | `fonts.h` | 16×16 单色点阵字库（覆盖全部界面文案），由 `gen_font.py` 生成 |
@@ -109,3 +109,29 @@ arduino-cli upload -p COM3 --fqbn $fqbn --input-dir C:\arduino-build\print_scree
   2. 主循环的息屏兜底曾用循环顶部缓存的 `now` 与 `pollScreen()` 内刚更新的 `lastStateChange` 相减 → 无符号下溢成 ~2^32 → 每次轮询都误触发熄屏（屏每 1.5s 明暗交替）。凡「HTTP 耗时调用前后」的时间比较，必须用新鲜 `millis()`。
 - **`axp2101_bsp.cpp` 编译修复**：例程仓该文件使用 `ESP_LOGI/ESP_LOGE(TAG, ...)` 但未定义 `TAG`，本项目补了 `static const char *TAG = "axp2101_bsp";`，其它代码未动。
 - **二维码颜色**：按需求走白底黑码（非反色），微信兼容性更稳；`SCANNED` 状态用 50% 灰码实现“二维码变暗”。
+
+## 九、电池电量上报（2026-08 装机电池后新增）
+
+板子带锂电池时，固件把电量随轮询捎带上报主控，**管理页（/admin）状态栏显示剩余电量**；小屏 UI 不显示。
+
+- **读取**：AXP2101 自带电量计寄存器直读百分比（`getBatteryPercent`，非电压估算），另读电压 mV、
+  充电中（`isCharging`）、USB 接入（`isVbusIn`）。`axp2101_bsp.cpp` 末尾的两个函数
+  （`Axp2101_EnableBatteryMonitor` / `Axp2101_ReadBattery`）是**项目自有扩展**，与上方例程原样复制部分有注释分隔；
+  `initPMU()` 里先开电池电压 ADC 才能读 mV。
+- **节奏**：`updateBatteryCache()` 每 60s 读一次 PMU 缓存（I2C 与显示/触摸共总线，不宜高频）；
+  上报则随每 1.5s 的 `GET /api/screen/state` 捎带 query 参数，不新增 HTTP 请求。无电池（`isBatteryConnect`=false）不追加参数。
+- **参数契约**（主控 `routes.py` 宽容解析，任一字段非法则整体忽略，绝不影响状态响应）：
+
+  | 参数 | 取值 | 说明 |
+  |---|---|---|
+  | `batt_pct` | 0~100 | 电量百分比（芯片电量计） |
+  | `batt_mv` | 0~5000 | 电池电压 mV |
+  | `batt_chg` | 0/1 | 充电中 |
+  | `batt_vbus` | 0/1 | USB 供电接入 |
+
+- **主控侧**：参数存入内存（重启即失，下次轮询即恢复）；响应体与 WS 快照带 `battery` 字段
+  （固件 ArduinoJson 自动忽略未知字段，旧主控配新固件也兼容）；百分比/充电态变化时向管理页推 `device` 消息。
+- **管理页显示**：`🔋 85%·充电中` / `🔋 42%` / `🔋 98%·USB`；**<20% 且非充电中红色**；
+  超 3 分钟未上报置灰（兼作板子在线指示）；悬停看电压与上报时间。
+- **充电管理无需固件干预**：AXP2101 硬件自动完成 USB/电池供电切换与充电（充电参数
+  500mA 恒流/50mA 截止在 `Custom_PmicRegisterInit()` 已配好）。

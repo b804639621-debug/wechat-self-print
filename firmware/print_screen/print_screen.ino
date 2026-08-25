@@ -11,6 +11,8 @@
  *   - 状态机：IDLE 显示二维码 / SCANNED 二维码变暗 / 服务中状态画面 / 打印中
  *   - 烧屏防护 4 条：亮度 80%、无操作熄屏、二维码随机偏移、定时微移刷新
  *   - 触摸轮询唤醒 → POST /api/screen/wake
+ *   - 电池监控：60s 读一次 AXP2101 电量计缓存，随轮询捎带 batt_* 参数上报主控
+ *     （管理页显示剩余电量；无电池不上报，小屏 UI 不显示）
  * 依赖库（Arduino 库管理器）：WiFiManager、ArduinoJson(v7)、
  *   XPowersLib（从微雪例程仓 01_Arduino_Libraries 拷入）。
  *   ricmoo/QRCode 已 vendored 到 src/ricmoo_qrcode/（esp32 core 3.3.x 内置同名头文件会抢占）。
@@ -44,6 +46,7 @@
 #define FOOTER_Y         460                 /* 页脚“微信扫码·传文件打印” */
 #define TEXT_Y           232                 /* 单行状态文字垂直居中位置 */
 #define MAINT_SHIFT_MS   (30UL * 1000)       /* 维护态白字防烧屏：每 30s 换一次绘制位置 */
+#define BATT_READ_INTERVAL_MS (60UL * 1000)  /* 电池缓存读取间隔（电量变化慢，不挤占 I2C 显示/触摸） */
 
 /* ============================ 全局状态 ============================ */
 I2cMasterBus I2cMasterBus_(GPIO_NUM_7, GPIO_NUM_8, I2C_NUM_0); /* 引脚见 user_config.h */
@@ -61,11 +64,20 @@ unsigned long lastPoll = 0;
 unsigned long lastShift = 0;        /* 定时微移刷新计时 */
 unsigned long lastStateChange = 0;  /* 状态/亮屏/触摸唤醒时间（本地熄屏兜底计时） */
 
+/* 电池缓存（AXP2101 电量计直读，随轮询上报主控） */
+int  battPct = -1;                  /* 电量百分比（-1=未读到） */
+int  battMv = 0;                    /* 电池电压 mV */
+bool battChg = false;               /* 充电中 */
+bool battVbus = false;              /* USB 供电接入 */
+bool battValid = false;             /* 是否检测到电池（无可上报数据=false） */
+unsigned long lastBattRead = 0;     /* 上次读 PMU 时间（0=未读，下次即读） */
+
 /* ============================ 初始化 ============================ */
 
 void initPMU(void) {
   /* AXP2101 PMU：必须先于显示（屏供电）。地址 0x34，与例程一致 */
   Custom_PmicPortInit(&I2cMasterBus_, 0x34);
+  Axp2101_EnableBatteryMonitor();   /* 开电池电压 ADC（读电量前置，2026-08 装机电池） */
   Serial.println("[hw] AXP2101 PMU init done");
 }
 
@@ -106,6 +118,7 @@ void setup(void) {
 
 void loop(void) {
   handleTouch();               /* 触摸轮询唤醒（每次循环） */
+  updateBatteryCache();        /* 电池缓存：60s 读一次 PMU（内部有间隔守卫） */
 
   unsigned long now = millis();
   unsigned long interval = (failCount > 0) ? POLL_BACKOFF_MS : POLL_INTERVAL_MS;
@@ -125,10 +138,35 @@ void loop(void) {
   delay(30);
 }
 
+/* ==================== 电池监控 ==================== */
+
+/* 60s 读一次 AXP2101 缓存到全局（电量变化慢；I2C 与显示/触摸共总线，不宜高频）。
+ * lastBattRead=0 时首次必读（开机首轮轮询即可上报）。 */
+void updateBatteryCache(void) {
+  unsigned long now = millis();
+  if (lastBattRead && (now - lastBattRead < BATT_READ_INTERVAL_MS)) return;
+  lastBattRead = now;
+  int pct, mv; bool chg, vbus;
+  if (Axp2101_ReadBattery(&pct, &mv, &chg, &vbus)) {
+    if (!battValid) Serial.println("[bat] 检测到电池");
+    battPct = pct; battMv = mv; battChg = chg; battVbus = vbus;
+    battValid = true;
+  } else {
+    if (battValid) Serial.println("[bat] 电池移除");
+    battValid = false;
+  }
+}
+
 /* ============================ 轮询与状态机 ============================ */
 
 void pollScreen(void) {
   String url = "http://" + String(SERVER_IP) + ":" + String(SERVER_PORT) + "/api/screen/state";
+  if (battValid) {   /* 捎带电池上报：主控存内存，管理页显示；无电池不追加（参数契约见 firmware/README §九） */
+    char q[72];
+    snprintf(q, sizeof(q), "?batt_pct=%d&batt_mv=%d&batt_chg=%d&batt_vbus=%d",
+             battPct, battMv, battChg ? 1 : 0, battVbus ? 1 : 0);
+    url += q;
+  }
   HTTPClient http;
   if (!http.begin(url.c_str())) { onServerDown(); return; }
   http.setConnectTimeout(HTTP_TIMEOUT_MS);

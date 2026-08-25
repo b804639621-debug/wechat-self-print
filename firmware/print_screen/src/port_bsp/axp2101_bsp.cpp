@@ -115,3 +115,22 @@ void Axp2101_SetAldo2(uint8_t vol) {
     axp2101.disableALDO2();
   }
 }
+
+/* ==================== 以下为项目自有扩展（非例程原样复制） ====================
+ * 电池电量读取：AXP2101 自带电量计寄存器（getBatteryPercent 直读 0~100）
+ * 与电池电压 ADC（getBattVoltage，需先 EnableBatteryMonitor 开通道）。
+ * 2026-08 装机电池后新增，供主控管理页显示剩余电量。 */
+void Axp2101_EnableBatteryMonitor(void) {
+  axp2101.enableBattVoltageMeasure();
+}
+
+bool Axp2101_ReadBattery(int *pct, int *mv, bool *charging, bool *vbus) {
+  if (!axp2101.isBatteryConnect()) {
+    return false;
+  }
+  *pct = axp2101.getBatteryPercent();
+  *mv = (int)axp2101.getBattVoltage();
+  *charging = axp2101.isCharging();
+  *vbus = axp2101.isVbusIn();
+  return true;
+}
