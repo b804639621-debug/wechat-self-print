@@ -84,9 +84,17 @@ static inline uint16_t lcd_px(uint16_t c) {
   return (uint16_t)((c >> 8) | (c << 8));
 }
 
+/* 0x11（sleep-out）后延时：SH8601 数据手册典型 120ms，微雪例程保守取 600ms。
+ * Task 10B S3 逐档实测（2026-08-25，每档烧录后 e2e 10 轮全过 + 串口日志无异常，
+ * 数值见下，最终视觉确认由用户看屏）：600ms→fw 冷启动恒 1133ms（基线）；
+ * 200/150/120ms 各档 e2e 10/10 全过，fw 实测恒 733/683/653ms，无花屏代理信号，
+ * 选定 120ms（=规格典型值）。
+ * 注意：lcd_panel_power_on 的 ALDO3 电源循环 3×100ms 不可压缩（电源轨稳定时间）。 */
+#define SH8601_SLEEP_OUT_DELAY_MS 120
+
 /* 显示初始化命令表：原样取自微雪 09_LVGL_V9_Test/bsp_lvgl_port.cpp */
 static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
-  { 0x11, (uint8_t[]){ 0x00 }, 0, 600 },
+  { 0x11, (uint8_t[]){ 0x00 }, 0, SH8601_SLEEP_OUT_DELAY_MS },
   { 0xFE, (uint8_t[]){ 0x20 }, 1, 0 },
   { 0x19, (uint8_t[]){ 0x10 }, 1, 0 },
   { 0x1C, (uint8_t[]){ 0xA0 }, 1, 0 },
