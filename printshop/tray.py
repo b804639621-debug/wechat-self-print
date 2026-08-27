@@ -38,11 +38,13 @@ def _icon(color: str) -> Image.Image:
 
 class TrayApp:
     def __init__(self, base_url: str, get_state: Callable[[], str], server=None,
-                 admin_opener: Callable[[], None] | None = None):
+                 admin_opener: Callable[[], None] | None = None,
+                 on_quit: Callable[[], None] | None = None):
         self._base = base_url.rstrip("/")
         self._get_state = get_state
         self._server = server
         self._admin_opener = admin_opener
+        self._on_quit = on_quit
         self._stop = threading.Event()
         self.icon = pystray.Icon(
             "printshop",
@@ -80,6 +82,11 @@ class TrayApp:
             pass
 
     def quit(self, *_args) -> None:
+        if self._on_quit is not None:
+            try:
+                self._on_quit()
+            except Exception:
+                pass  # GUI 退出钩子失败不能拖垮托盘
         self._stop.set()
         if self._server is not None:
             # uvicorn 标准退出机制：main_loop 每 0.1s 轮询 should_exit，
@@ -116,8 +123,9 @@ class TrayApp:
 
 
 def start_tray(base_url: str, get_state: Callable[[], str], server=None,
-               admin_opener: Callable[[], None] | None = None) -> TrayApp:
+               admin_opener: Callable[[], None] | None = None,
+               on_quit: Callable[[], None] | None = None) -> TrayApp:
     tray = TrayApp(base_url=base_url, get_state=get_state, server=server,
-                   admin_opener=admin_opener)
+                   admin_opener=admin_opener, on_quit=on_quit)
     tray.run_thread()
     return tray

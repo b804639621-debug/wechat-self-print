@@ -37,11 +37,11 @@ class _FakeIcon:
 @pytest.fixture
 def tray_factory():
     def make(base="http://127.0.0.1:8000", get_state=lambda: SessionState.IDLE,
-             server=None, admin_opener=None):
+             server=None, admin_opener=None, on_quit=None):
         with patch("printshop.tray.pystray.Icon", return_value=_FakeIcon()):
             from printshop.tray import TrayApp
             return TrayApp(base_url=base, get_state=get_state, server=server,
-                           admin_opener=admin_opener)
+                           admin_opener=admin_opener, on_quit=on_quit)
     return make
 
 
@@ -162,3 +162,34 @@ def test_quit_sets_server_should_exit_and_stops_icon(tray_factory):
     tray.quit()
     assert server.should_exit is True
     assert tray.icon.stopped is True
+
+
+def test_quit_calls_on_quit_before_shutdown(tray_factory):
+    calls = []
+    server = MagicMock()
+    tray = tray_factory(server=server, on_quit=lambda: calls.append("on_quit"))
+    tray.quit()
+    assert calls == ["on_quit"]
+    assert server.should_exit is True
+    assert tray.icon.stopped is True
+
+
+def test_quit_swallows_on_quit_exception(tray_factory):
+    def boom():
+        raise RuntimeError("boom")
+
+    server = MagicMock()
+    tray = tray_factory(server=server, on_quit=boom)
+    tray.quit()  # 不应抛异常
+    assert server.should_exit is True
+    assert tray.icon.stopped is True
+
+
+def test_open_admin_does_not_trigger_on_quit(tray_factory):
+    opened = []
+    quits = []
+    tray = tray_factory(admin_opener=lambda: opened.append("opened"),
+                        on_quit=lambda: quits.append("quit"))
+    tray.open_admin()
+    assert opened == ["opened"]
+    assert quits == []

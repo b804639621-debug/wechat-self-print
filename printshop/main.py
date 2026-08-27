@@ -9,6 +9,8 @@ import contextlib
 import logging
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import uvicorn
@@ -140,6 +142,49 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
     return app
 
 
+def _run_web_mode(cfg: Config, app: FastAPI, ctx: AppContext,
+               server: uvicorn.Server) -> None:
+    """等价旧行为：托盘 + 主线程阻塞运行 uvicorn（--web 浏览器兜底模式）。"""
+    start_tray(base_url=f"http://127.0.0.1:{cfg.port}",
+               get_state=lambda: ctx.sm.state, server=server)
+    server.run()
+
+
+def _run_gui_mode(cfg: Config, app: FastAPI, ctx: AppContext,
+                  server: uvicorn.Server) -> int:
+    """默认 GUI 模式：后台 uvicorn + pywebview 原生窗口 + 系统托盘。"""
+    from printshop.gui import GuiController
+
+    server_thread = threading.Thread(target=server.run, name="uvicorn-gui", daemon=True)
+    server_thread.start()
+
+    deadline = time.monotonic() + 15.0
+    while not server.started:
+        if not server_thread.is_alive():
+            _log.error("uvicorn 服务启动失败")
+            return 2
+        if time.monotonic() >= deadline:
+            _log.error("uvicorn 服务启动超时（15s）")
+            server.should_exit = True
+            server_thread.join(timeout=10)
+            return 2
+        time.sleep(0.05)
+
+    gui = GuiController(f"http://127.0.0.1:{cfg.port}/admin")
+    start_tray(base_url=f"http://127.0.0.1:{cfg.port}",
+               get_state=lambda: ctx.sm.state, server=server,
+               admin_opener=gui.show, on_quit=gui.quit)
+    try:
+        gui.start_blocking()
+    except Exception:
+        _log.exception("GUI 启动失败")
+        return 2
+    finally:
+        server.should_exit = True
+        server_thread.join(timeout=10)
+    return 0
+
+
 def main() -> None:
     if getattr(sys, "frozen", False):
         os.chdir(Path(sys.executable).resolve().parent)
@@ -150,9 +195,10 @@ def main() -> None:
     app = create_app(cfg)
     ctx = app.state.ctx
     server = uvicorn.Server(uvicorn.Config(app, host=cfg.host, port=cfg.port))
-    start_tray(base_url=f"http://127.0.0.1:{cfg.port}",
-               get_state=lambda: ctx.sm.state, server=server)
-    server.run()
+    if "--web" in sys.argv:
+        _run_web_mode(cfg, app, ctx, server)
+    else:
+        sys.exit(_run_gui_mode(cfg, app, ctx, server))
 
 
 if __name__ == "__main__":
