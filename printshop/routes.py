@@ -157,6 +157,17 @@ def _job_dict(job) -> dict:
     }
 
 
+def _printable_status(job) -> str | None:
+    """返回不可打印的原因；可打印（PENDING/FAILED/DONE）时返回 None。"""
+    if job.status == JobStatus.PRINTING:
+        return "任务正在打印中，请勿重复操作"
+    if job.status == JobStatus.DISCARDED:
+        return "任务已结束，无法打印"
+    if job.status in (JobStatus.PENDING, JobStatus.FAILED, JobStatus.DONE):
+        return None
+    return "任务已结束，无法打印"
+
+
 def _validate_job_path(cfg, file_path: str) -> Path:
     """校验文件存在且 resolve 后位于 inbox/work 之内，防止未认证端触发任意路径执行。"""
     p = Path(file_path)
@@ -296,7 +307,15 @@ def build_router(ctx: AppContext) -> APIRouter:
 
     @router.get("/api/jobs")
     async def jobs_list():
-        return [_job_dict(j) for j in store.list_active()]
+        active = store.list_active()
+        recent_done = store.list_recent_done(30)
+        seen = set()
+        jobs = []
+        for job in active + recent_done:
+            if job.id not in seen:
+                seen.add(job.id)
+                jobs.append(job)
+        return [_job_dict(j) for j in jobs]
 
     @router.get("/api/jobs/{job_id}/preview")
     async def job_preview(job_id: int, page: int = 0):
@@ -324,8 +343,11 @@ def build_router(ctx: AppContext) -> APIRouter:
         job = store.get(job_id)
         if job is None:
             return JSONResponse(status_code=404, content={"ok": False, "error": "任务不存在"})
-        if job.status not in JobStatus._ACTIVE:
-            return {"ok": False, "error": "任务已结束，无法打印"}
+        err = _printable_status(job)
+        if err:
+            return {"ok": False, "error": err}
+        if job.status == JobStatus.DONE:
+            store.set_status(job.id, JobStatus.PENDING)
         return await do_print(job, body)
 
     @router.post("/api/jobs/print_batch")
@@ -336,9 +358,12 @@ def build_router(ctx: AppContext) -> APIRouter:
             if job is None:
                 results.append({"id": jid, "ok": False, "error": "任务不存在"})
                 continue
-            if job.status not in JobStatus._ACTIVE:
-                results.append({"id": jid, "ok": False, "error": "任务已结束，无法打印"})
+            err = _printable_status(job)
+            if err:
+                results.append({"id": jid, "ok": False, "error": err})
                 continue
+            if job.status == JobStatus.DONE:
+                store.set_status(job.id, JobStatus.PENDING)
             res = await do_print(job, body.options)
             results.append({"id": jid, **res})
         return {"ok": all(r["ok"] for r in results), "results": results}

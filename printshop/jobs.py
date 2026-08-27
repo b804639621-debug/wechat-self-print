@@ -104,6 +104,15 @@ class JobStore:
         ).fetchall()
         return [self._row_to_job(r) for r in rows]
 
+    def list_recent_done(self, limit: int = 30) -> list[Job]:
+        """Return recent DONE jobs ordered by printed_at DESC, id DESC."""
+        rows = self.conn.execute(
+            f"SELECT {', '.join(_COLUMNS)} FROM print_jobs "
+            "WHERE status = ? ORDER BY printed_at DESC, id DESC LIMIT ?",
+            (JobStatus.DONE, limit),
+        ).fetchall()
+        return [self._row_to_job(r) for r in rows]
+
     def get(self, job_id: int) -> Job | None:
         row = self.conn.execute(
             f"SELECT {', '.join(_COLUMNS)} FROM print_jobs WHERE id = ?",

@@ -28,6 +28,44 @@ def test_list_active_filters_done_and_discarded(tmp_path: Path):
     assert active == {b, d}
 
 
+def test_list_recent_done_filters_sorts_and_limits(tmp_path: Path):
+    s = JobStore(tmp_path / "t.db")
+    times = [
+        "2026-08-20 00:00:00",
+        "2026-08-20 00:00:00",
+        "2026-08-20 00:00:01",
+        "2026-08-20 00:00:01",
+        "2026-08-20 00:00:02",
+    ]
+    ids = []
+    for i, t in enumerate(times):
+        jid = s.add(f"m{i}", f"{i}.pdf", f"inbox/{i}.pdf", "pdf", 100 + i, 1 + i)
+        s.mark_printed(jid)
+        s.conn.execute(
+            "UPDATE print_jobs SET printed_at = ? WHERE id = ?",
+            (t, jid),
+        )
+        s.conn.commit()
+        ids.append(jid)
+
+    pending = s.add("m_p", "p.pdf", "inbox/p.pdf", "pdf", 1, 1)
+    failed = s.add("m_f", "f.pdf", "inbox/f.pdf", "pdf", 1, 1)
+    s.set_status(failed, JobStatus.FAILED)
+    discarded = s.add("m_d", "d.pdf", "inbox/d.pdf", "pdf", 1, 1)
+    s.set_status(discarded, JobStatus.DISCARDED)
+
+    recent = s.list_recent_done(3)
+    assert [j.id for j in recent] == [ids[4], ids[3], ids[2]]
+    assert all(j.status == JobStatus.DONE for j in recent)
+
+    all_done = s.list_recent_done()
+    assert [j.id for j in all_done] == [ids[4], ids[3], ids[2], ids[1], ids[0]]
+    done_ids = {j.id for j in all_done}
+    assert pending not in done_ids
+    assert failed not in done_ids
+    assert discarded not in done_ids
+
+
 def test_get_missing_returns_none(tmp_path: Path):
     s = JobStore(tmp_path / "t.db")
     assert s.get(999) is None

@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from fastapi.testclient import TestClient
 
@@ -93,11 +93,28 @@ def test_printers():
 def test_jobs_list(tmp_path):
     app, ctx = _app(tmp_path)
     ctx.store.list_active.return_value = [_job(1), _job(2)]
+    ctx.store.list_recent_done.return_value = []
     r = TestClient(app).get("/api/jobs")
     assert r.status_code == 200
     jobs = r.json()
     assert [j["id"] for j in jobs] == [1, 2]
     assert jobs[0]["status"] == JobStatus.PENDING
+
+
+def test_jobs_list_includes_recent_done(tmp_path):
+    app, ctx = _app(tmp_path)
+    ctx.store.list_active.return_value = [_job(1)]
+    ctx.store.list_recent_done.return_value = [
+        _job(2, status=JobStatus.DONE),
+        _job(3, status=JobStatus.DONE),
+    ]
+    r = TestClient(app).get("/api/jobs")
+    assert r.status_code == 200
+    jobs = r.json()
+    assert [j["id"] for j in jobs] == [1, 2, 3]
+    assert [j["status"] for j in jobs] == [
+        JobStatus.PENDING, JobStatus.DONE, JobStatus.DONE,
+    ]
 
 
 def test_print_success(tmp_path):
@@ -186,12 +203,38 @@ def test_print_missing_job_404(tmp_path):
     assert r.json() == {"ok": False, "error": "任务不存在"}
 
 
-def test_print_already_done_rejected(tmp_path):
+def test_print_done_reenabled(tmp_path):
     app, ctx = _app(tmp_path)
     ctx.store.get.return_value = _file_job(tmp_path, status=JobStatus.DONE)
+    _write_src(tmp_path)
+    with patch("printshop.routes.normalize_to_pdf", return_value=_norm_path(tmp_path)), \
+         patch("printshop.routes.print_pdf", return_value=(True, "")):
+        r = TestClient(app).post("/api/jobs/1/print", json={"printer": "EPSON"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "error": ""}
+    assert ctx.store.set_status.call_args_list[0] == call(1, JobStatus.PENDING)
+    assert ctx.store.set_status.call_args_list[1].args[0] == 1
+    assert ctx.store.set_status.call_args_list[1].args[1] == JobStatus.DONE
+    ctx.store.mark_printed.assert_called_once_with(1)
+
+
+def test_print_discarded_rejected(tmp_path):
+    app, ctx = _app(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path, status=JobStatus.DISCARDED)
     r = TestClient(app).post("/api/jobs/1/print", json={"printer": "EPSON"})
     assert r.status_code == 200
     assert r.json() == {"ok": False, "error": "任务已结束，无法打印"}
+    ctx.store.set_status.assert_not_called()
+    ctx.store.mark_printed.assert_not_called()
+
+
+def test_print_printing_rejected(tmp_path):
+    app, ctx = _app(tmp_path)
+    ctx.store.get.return_value = _file_job(tmp_path, status=JobStatus.PRINTING)
+    r = TestClient(app).post("/api/jobs/1/print", json={"printer": "EPSON"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": False, "error": "任务正在打印中，请勿重复操作"}
+    ctx.store.set_status.assert_not_called()
     ctx.store.mark_printed.assert_not_called()
 
 
@@ -224,6 +267,28 @@ def test_print_batch_partial_failure(tmp_path):
     assert body["ok"] is False
     assert body["results"][0]["ok"] is True
     assert body["results"][1] == {"id": 2, "ok": False, "error": "打印机不存在"}
+
+
+def test_print_batch_done_reenabled(tmp_path):
+    app, ctx = _app(tmp_path)
+    ctx.store.get.side_effect = [
+        _file_job(tmp_path, id=1, status=JobStatus.DONE),
+        _file_job(tmp_path, id=2, status=JobStatus.DONE),
+    ]
+    _write_src(tmp_path)
+    with patch("printshop.routes.normalize_to_pdf", return_value=_norm_path(tmp_path)), \
+         patch("printshop.routes.print_pdf", return_value=(True, "")):
+        r = TestClient(app).post("/api/jobs/print_batch",
+                                 json={"ids": [1, 2], "options": {"printer": "EPSON"}})
+    body = r.json()
+    assert body["ok"] is True
+    assert body["results"] == [
+        {"id": 1, "ok": True, "error": ""},
+        {"id": 2, "ok": True, "error": ""},
+    ]
+    assert ctx.store.set_status.call_args_list[0] == call(1, JobStatus.PENDING)
+    assert ctx.store.set_status.call_args_list[2] == call(2, JobStatus.PENDING)
+    assert ctx.store.mark_printed.call_count == 2
 
 
 def test_preview_returns_png_and_backfills_page_count(tmp_path):

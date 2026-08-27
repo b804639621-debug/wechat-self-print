@@ -692,8 +692,9 @@
     var job = S.selId ? S.jobsById[S.selId] : null;
     var isOther = job && job.category === "other";
     var isFailed = job && job.status === "failed";
-    var isFinished = job && (job.status === "done" || job.status === "discarded");
+    var isFinished = job && job.status === "discarded";
     var isBusy = S.saving || (job && job.status === "printing");
+    $("print-btn").textContent = (job && job.status === "done") ? "🖨 重新打印" : "🖨 开始打印";
     $("print-btn").disabled = isBusy || !job || isOther || isFinished || !$("printer").value;
     $("retry-btn").style.display = isFailed ? "" : "none";
     $("retry-btn").disabled = isBusy || !isFailed;
@@ -711,7 +712,7 @@
   function afterAction(ids) {
     ids = ids.filter(function (id) {
       var j = S.jobsById[id];
-      return j && j.status !== "done" && j.status !== "discarded";
+      return j && j.status !== "discarded";
     });
     if (!ids.length) { toast("所选文件已全部处理完毕", "error"); return; }
     S.saving = true; // 防连点：立即锁定打印相关按钮
