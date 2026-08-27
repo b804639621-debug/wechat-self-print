@@ -6,8 +6,11 @@
   .NET 互操作走 PowerShell 助手，必须打入并在冻结态解析其 _MEI 解压路径）、
   vendor/（微信机器人直连模块）。tools/SumatraPDF.exe 不打入（运行时已无调用，
   白占 ~30MB 解压体积；仓内 tools/ 保留供人工调试）。
-- console=True：店内服务便于看日志；数据目录（inbox/work/db）由 main.py 在
-  冻结态 chdir 到 exe 同级目录，保证不落 _MEI 临时目录。
+- console=False：窗口化运行，双击只出现 GUI 窗口、不出现黑色控制台；
+  运行日志（应用日志、uvicorn 日志、vendor print 输出）由 main.py 初始化写入
+  exe 同级 logs/printshop.log（滚动备份），排障从托盘“打开运行日志”进入。
+  数据目录（inbox/work/db）由 main.py 在冻结态 chdir 到 exe 同级目录，
+  保证不落 _MEI 临时目录。
 - hiddenimports：uvicorn（uvloop/httptools/websockets 等被 hook 覆盖）、
   pystray 的 win32 后端与 pywin32 的 win32print/win32com 显式声明以防漏。
 - BLE（Task 10B）：winrt 是命名空间包（顶层无 __init__.py），各业务子模块的
@@ -110,7 +113,7 @@ exe = EXE(
     upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

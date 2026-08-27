@@ -37,11 +37,12 @@ class _FakeIcon:
 @pytest.fixture
 def tray_factory():
     def make(base="http://127.0.0.1:8000", get_state=lambda: SessionState.IDLE,
-             server=None, admin_opener=None, on_quit=None):
+             server=None, admin_opener=None, on_quit=None, log_opener=None):
         with patch("printshop.tray.pystray.Icon", return_value=_FakeIcon()):
             from printshop.tray import TrayApp
             return TrayApp(base_url=base, get_state=get_state, server=server,
-                           admin_opener=admin_opener, on_quit=on_quit)
+                           admin_opener=admin_opener, on_quit=on_quit,
+                           log_opener=log_opener)
     return make
 
 
@@ -154,6 +155,26 @@ def test_open_admin_uses_os_startfile_when_no_opener(tray_factory):
     with patch("printshop.tray.os.startfile") as startfile:
         tray.open_admin()
     startfile.assert_called_once_with("http://127.0.0.1:8000/admin")
+
+
+def test_open_log_calls_opener(tray_factory):
+    opened = []
+    tray = tray_factory(log_opener=lambda: opened.append("opened"))
+    tray.open_log()
+    assert opened == ["opened"]
+
+
+def test_open_log_swallows_opener_exception(tray_factory):
+    def boom():
+        raise RuntimeError("boom")
+
+    tray = tray_factory(log_opener=boom)
+    tray.open_log()  # 不应抛异常
+
+
+def test_open_log_no_opener_no_crash(tray_factory):
+    tray = tray_factory()
+    tray.open_log()  # 未注入 opener 也不应崩
 
 
 def test_quit_sets_server_should_exit_and_stops_icon(tray_factory):

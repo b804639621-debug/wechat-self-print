@@ -21,6 +21,11 @@ from fastapi.staticfiles import StaticFiles
 from printshop.ble_link import BleScreenLink, run_ble_selftest
 from printshop.config import Config
 from printshop.jobs import JobStore
+from printshop.logging_setup import (
+    configure_file_logging,
+    redirect_std_streams_to_logging,
+    uvicorn_log_config,
+)
 from printshop.routes import AppContext, _is_loopback_host, build_router
 from printshop.session_manager import SessionManager, SessionState
 from printshop.tray import start_tray
@@ -143,15 +148,20 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
 
 
 def _run_web_mode(cfg: Config, app: FastAPI, ctx: AppContext,
-               server: uvicorn.Server) -> None:
+               server: uvicorn.Server, log_path: Path,
+               log_opener=None) -> None:
     """等价旧行为：托盘 + 主线程阻塞运行 uvicorn（--web 浏览器兜底模式）。"""
+    if log_opener is None:
+        log_opener = lambda: os.startfile(str(log_path))
     start_tray(base_url=f"http://127.0.0.1:{cfg.port}",
-               get_state=lambda: ctx.sm.state, server=server)
+               get_state=lambda: ctx.sm.state, server=server,
+               log_opener=log_opener)
     server.run()
 
 
 def _run_gui_mode(cfg: Config, app: FastAPI, ctx: AppContext,
-                  server: uvicorn.Server) -> int:
+                  server: uvicorn.Server, log_path: Path,
+                  log_opener=None) -> int:
     """默认 GUI 模式：后台 uvicorn + pywebview 原生窗口 + 系统托盘。"""
     from printshop.gui import GuiController
 
@@ -173,7 +183,8 @@ def _run_gui_mode(cfg: Config, app: FastAPI, ctx: AppContext,
     gui = GuiController(f"http://127.0.0.1:{cfg.port}/admin")
     start_tray(base_url=f"http://127.0.0.1:{cfg.port}",
                get_state=lambda: ctx.sm.state, server=server,
-               admin_opener=gui.show, on_quit=gui.quit)
+               admin_opener=gui.show, on_quit=gui.quit,
+               log_opener=log_opener)
     try:
         gui.start_blocking()
     except Exception:
@@ -188,17 +199,27 @@ def _run_gui_mode(cfg: Config, app: FastAPI, ctx: AppContext,
 def main() -> None:
     if getattr(sys, "frozen", False):
         os.chdir(Path(sys.executable).resolve().parent)
+    log_path = configure_file_logging()
+    redirect_std_streams_to_logging()
+    _log.info("启动 printshop，日志文件：%s", log_path)
+
     if "--ble-selftest" in sys.argv:
         # BLE 自检模式：不起服务/托盘、不碰微信，直接跑真实小屏链路后退出
         sys.exit(asyncio.run(run_ble_selftest(Config())))
     cfg = Config()
     app = create_app(cfg)
     ctx = app.state.ctx
-    server = uvicorn.Server(uvicorn.Config(app, host=cfg.host, port=cfg.port))
+    server = uvicorn.Server(uvicorn.Config(
+        app,
+        host=cfg.host,
+        port=cfg.port,
+        log_config=uvicorn_log_config(),
+    ))
+    log_opener = lambda: os.startfile(str(log_path))
     if "--web" in sys.argv:
-        _run_web_mode(cfg, app, ctx, server)
+        _run_web_mode(cfg, app, ctx, server, log_path, log_opener)
     else:
-        sys.exit(_run_gui_mode(cfg, app, ctx, server))
+        sys.exit(_run_gui_mode(cfg, app, ctx, server, log_path, log_opener))
 
 
 if __name__ == "__main__":

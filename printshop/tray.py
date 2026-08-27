@@ -39,12 +39,14 @@ def _icon(color: str) -> Image.Image:
 class TrayApp:
     def __init__(self, base_url: str, get_state: Callable[[], str], server=None,
                  admin_opener: Callable[[], None] | None = None,
-                 on_quit: Callable[[], None] | None = None):
+                 on_quit: Callable[[], None] | None = None,
+                 log_opener: Callable[[], None] | None = None):
         self._base = base_url.rstrip("/")
         self._get_state = get_state
         self._server = server
         self._admin_opener = admin_opener
         self._on_quit = on_quit
+        self._log_opener = log_opener
         self._stop = threading.Event()
         self.icon = pystray.Icon(
             "printshop",
@@ -53,6 +55,7 @@ class TrayApp:
             Menu(
                 MenuItem("点亮屏幕", self.wake, default=True),
                 MenuItem("打开管理界面", self.open_admin),
+                MenuItem("打开运行日志", self.open_log),
                 MenuItem("退出", self.quit),
             ),
         )
@@ -80,6 +83,13 @@ class TrayApp:
                 os.startfile(f"{self._base}/admin")
         except Exception:
             pass
+
+    def open_log(self, *_args) -> None:
+        try:
+            if self._log_opener is not None:
+                self._log_opener()
+        except Exception:
+            pass  # 日志文件被占用/系统无关联程序等：托盘不得崩溃
 
     def quit(self, *_args) -> None:
         if self._on_quit is not None:
@@ -124,8 +134,10 @@ class TrayApp:
 
 def start_tray(base_url: str, get_state: Callable[[], str], server=None,
                admin_opener: Callable[[], None] | None = None,
-               on_quit: Callable[[], None] | None = None) -> TrayApp:
+               on_quit: Callable[[], None] | None = None,
+               log_opener: Callable[[], None] | None = None) -> TrayApp:
     tray = TrayApp(base_url=base_url, get_state=get_state, server=server,
-                   admin_opener=admin_opener, on_quit=on_quit)
+                   admin_opener=admin_opener, on_quit=on_quit,
+                   log_opener=log_opener)
     tray.run_thread()
     return tray
