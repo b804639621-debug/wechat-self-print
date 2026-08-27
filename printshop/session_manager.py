@@ -3,10 +3,14 @@
 含加固与恢复：断线指数退避重连、启动时凭证恢复、run_loop 看门狗、会话定时保存。
 """
 import asyncio
+import ipaddress
 import logging
+import re
 import time
+import webbrowser
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 import httpx
 
@@ -36,6 +40,49 @@ def _is_network_error(exc: BaseException) -> bool:
     return False
 
 
+_URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+_URL_TRAILING_PUNCTUATION = "。，！？；、,.;:!?)]}>\"'）】》」』…"
+
+
+def _is_public_url(url: str) -> bool:
+    """仅接受可安全交给系统浏览器打开的全局公网 http/https URL。"""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        host = parsed.hostname
+        if not host:
+            return False
+    except ValueError:
+        return False
+
+    host = host.rstrip(".").lower()
+    # 域名不做 DNS 解析：只拒绝明确的本地主机名/本地链路域名形态。
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    if host.endswith(".local"):
+        return False
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return ip.is_global and not ip.is_multicast
+
+
+def extract_public_urls(text: str) -> list[str]:
+    """从文本提取有序、去重且仅含公网 http/https 的 URL。"""
+    urls: list[str] = []
+    seen: set[str] = set()
+    for raw in _URL_RE.findall(text or ""):
+        url = raw.rstrip(_URL_TRAILING_PUNCTUATION)
+        if not url or url in seen or not _is_public_url(url):
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
 class SessionState:
     IDLE = "IDLE"
     SCANNED = "SCANNED"
@@ -46,13 +93,15 @@ class SessionState:
 
 class SessionManager:
     def __init__(self, cfg: Config, wx, store, *,
-                 sleep=asyncio.sleep, max_iterations: int | None = None):
+                 sleep=asyncio.sleep, max_iterations: int | None = None,
+                 link_opener: Callable[[str], object] | None = None):
         self._cfg = cfg
         self._wx = wx
         self._store = store
         self._sleep = sleep
         # max_iterations 仅测试用途：限定 run_loop 迭代次数，便于确定性退出，生产为 None
         self.max_iterations = max_iterations
+        self._link_opener = link_opener if link_opener is not None else webbrowser.open
 
         self.state = SessionState.IDLE
         self.display = False
@@ -68,6 +117,7 @@ class SessionManager:
         self._last_file_ts = time.monotonic()
         self._no_file_reminder = False
         self._seen_msg_ids: set[str] = set()
+        self._opened_links: set[str] = set()
         self._reconnect_failures = 0
         self._last_save_ts = time.monotonic()
         # finish_service 与 run_loop 掉线路径（_logout_to_idle_with_fresh_qr）互斥
@@ -111,6 +161,7 @@ class SessionManager:
             self._last_event_ts = time.monotonic()
             self._last_file_ts = time.monotonic()
             self._transition(SessionState.CONNECTED)
+            self._opened_links.clear()
             # 保留此处保存：SessionManager 走 wx.poll_login()→vendor _poll_login_once()
             # 直连路径，不会触发 vendor check_login_status() 内部的 save_session
             # （direct_bot.py:324 仅在 check_login_status 路径生效），故必须显式保存。
@@ -176,6 +227,29 @@ class SessionManager:
         )
         self.file_count += 1
 
+    async def _open_links(self, text: str) -> None:
+        """打开顾客文本消息中的公网链接；任何异常仅记录，不影响收文件流程。"""
+        if not self._cfg.auto_open_links:
+            return
+        try:
+            urls = extract_public_urls(text)
+        except Exception:
+            _log.warning("提取链接失败（忽略）", exc_info=True)
+            return
+        for url in urls:
+            if len(self._opened_links) >= self._cfg.auto_open_max_links:
+                break
+            if url in self._opened_links:
+                continue
+            try:
+                await asyncio.to_thread(self._link_opener, url)
+            except Exception as exc:
+                _log.warning("打开链接失败: %s (%s)", url, exc)
+                continue
+            self._opened_links.add(url)
+            if len(self._opened_links) >= self._cfg.auto_open_max_links:
+                break
+
     async def _process_messages(self) -> None:
         if self.state != SessionState.CONNECTED:
             return
@@ -217,11 +291,13 @@ class SessionManager:
                     self._seen_msg_ids.add(mid)
                     received_any = True
                 elif mtype == "text":
-                    self._note = m.get("text", "")
+                    text = m.get("text", "")
+                    self._note = text
                     self._seen_msg_ids.add(mid)
                     self._notify()
                     if self.on_note:
                         self.on_note()
+                    await self._open_links(text)
         finally:
             if files:
                 self._transition(SessionState.CONNECTED)
@@ -293,6 +369,7 @@ class SessionManager:
             _log.exception("登出微信失败（继续清理本地状态）")
             failures.append("logout")
         finally:
+            self._opened_links.clear()
             failures += self._clean_dir(self._cfg.inbox_dir)
             failures += self._clean_dir(self._cfg.work_dir)
             failures += self._clean_dir(self._trace_dir())

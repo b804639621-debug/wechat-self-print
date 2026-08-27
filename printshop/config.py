@@ -24,6 +24,8 @@ class Config:
     screen_ble_name: str = "PRINT-SCREEN"           # 绑定核对用设备名
     ble_fast_rewake_seconds: float = 120.0          # 息屏后保持连接的快速重醒窗口
     ble_heartbeat_seconds: float = 900.0            # 空闲期周期连接拉电池+在线心跳
+    auto_open_links: bool = True
+    auto_open_max_links: int = 3
 
     def __post_init__(self) -> None:
         """环境变量 PRINTSHOP_SCREEN_BLE_ADDRESS 覆盖/禁用 BLE 地址（部署回滚开关）。"""

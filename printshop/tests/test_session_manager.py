@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from printshop.jobs import JobStatus
-from printshop.session_manager import SessionManager, SessionState
+from printshop.session_manager import SessionManager, SessionState, extract_public_urls
 from printshop.config import Config
 
 
@@ -513,3 +513,141 @@ async def test_receive_oversized_file_marked_failed_not_persisted(tmp_path):
     assert store.add.call_args.kwargs["file_path"] == ""
     store.set_status.assert_called_once_with(42, JobStatus.FAILED, error="文件超过 25MB，未接收")
     assert sm.file_count == 1
+
+
+def test_extract_public_urls_strips_chinese_punctuation():
+    assert extract_public_urls("请打开 https://example.com/a?x=1。") == ["https://example.com/a?x=1"]
+
+
+def test_extract_public_urls_rejects_local_private_and_non_http():
+    text = (
+        "http://127.0.0.1:8000/api/... "
+        "http://localhost/x "
+        "http://foo.localhost/y "
+        "http://192.168.1.5/x "
+        "http://10.0.0.1/x "
+        "http://[::1]/x "
+        "http://224.0.0.1/x "
+        "file:///etc/passwd "
+        "weixin://abc"
+    )
+    assert extract_public_urls(text) == []
+
+
+@pytest.mark.asyncio
+async def test_text_message_opens_public_link_without_trailing_punctuation():
+    opened = []
+    sm = SessionManager(Config(), MagicMock(), MagicMock(), link_opener=lambda u: opened.append(u))
+    sm.state = SessionState.CONNECTED
+    sm._wx.fetch_messages = AsyncMock(return_value=[
+        {"id": "t1", "type": "text", "text": "请打开 https://example.com/a?x=1。", "is_mine": False}])
+    await sm._process_messages()
+    assert opened == ["https://example.com/a?x=1"]
+
+
+@pytest.mark.asyncio
+async def test_text_message_does_not_open_local_private_or_non_http():
+    opened = []
+    sm = SessionManager(Config(), MagicMock(), MagicMock(), link_opener=lambda u: opened.append(u))
+    sm.state = SessionState.CONNECTED
+    text = (
+        "http://127.0.0.1:8000/api/... "
+        "http://localhost/x "
+        "http://foo.localhost/y "
+        "http://192.168.1.5/x "
+        "http://10.0.0.1/x "
+        "http://[::1]/x "
+        "http://224.0.0.1/x "
+        "file:///etc/passwd "
+        "weixin://abc"
+    )
+    sm._wx.fetch_messages = AsyncMock(return_value=[
+        {"id": "t1", "type": "text", "text": text, "is_mine": False}])
+    await sm._process_messages()
+    assert opened == []
+
+
+@pytest.mark.asyncio
+async def test_text_message_deduplicates_urls_in_same_message():
+    opened = []
+    sm = SessionManager(Config(), MagicMock(), MagicMock(), link_opener=lambda u: opened.append(u))
+    sm.state = SessionState.CONNECTED
+    sm._wx.fetch_messages = AsyncMock(return_value=[
+        {"id": "t1", "type": "text",
+         "text": "https://example.com/a https://example.com/a https://example.com/b",
+         "is_mine": False}])
+    await sm._process_messages()
+    assert opened == ["https://example.com/a", "https://example.com/b"]
+
+
+@pytest.mark.asyncio
+async def test_same_link_not_reopened_across_messages_in_session():
+    opened = []
+    sm = SessionManager(Config(), MagicMock(), MagicMock(), link_opener=lambda u: opened.append(u))
+    sm.state = SessionState.CONNECTED
+    sm._wx.fetch_messages = AsyncMock(return_value=[
+        {"id": "t1", "type": "text", "text": "https://example.com/a", "is_mine": False}])
+    await sm._process_messages()
+    assert opened == ["https://example.com/a"]
+
+    sm._wx.fetch_messages = AsyncMock(return_value=[
+        {"id": "t2", "type": "text", "text": "https://example.com/a", "is_mine": False}])
+    await sm._process_messages()
+    assert opened == ["https://example.com/a"]
+
+
+@pytest.mark.asyncio
+async def test_auto_open_max_links_stops_after_limit():
+    cfg = Config(); cfg.auto_open_max_links = 2
+    opened = []
+    sm = SessionManager(cfg, MagicMock(), MagicMock(), link_opener=lambda u: opened.append(u))
+    sm.state = SessionState.CONNECTED
+    sm._wx.fetch_messages = AsyncMock(return_value=[
+        {"id": "t1", "type": "text",
+         "text": "https://a.com https://b.com https://c.com",
+         "is_mine": False}])
+    await sm._process_messages()
+    assert opened == ["https://a.com", "https://b.com"]
+
+
+@pytest.mark.asyncio
+async def test_auto_open_links_false_disables_opening():
+    cfg = Config(); cfg.auto_open_links = False
+    opened = []
+    sm = SessionManager(cfg, MagicMock(), MagicMock(), link_opener=lambda u: opened.append(u))
+    sm.state = SessionState.CONNECTED
+    sm._wx.fetch_messages = AsyncMock(return_value=[
+        {"id": "t1", "type": "text", "text": "https://example.com/a", "is_mine": False}])
+    await sm._process_messages()
+    assert opened == []
+
+
+@pytest.mark.asyncio
+async def test_opener_exception_does_not_break_file_receive(tmp_path):
+    cfg = Config(); cfg.inbox_dir = tmp_path
+    store = MagicMock()
+
+    def bad_opener(url):
+        raise RuntimeError("boom")
+
+    sm = SessionManager(cfg, MagicMock(), store, link_opener=bad_opener)
+    sm.state = SessionState.CONNECTED
+    sm._wx.fetch_messages = AsyncMock(return_value=[
+        {"id": "t1", "type": "text", "text": "https://example.com/a", "is_mine": False},
+        {"id": "f1", "type": "file", "file_name": "a.pdf", "is_mine": False}])
+    sm._wx.download = AsyncMock(return_value=b"PDF")
+    await sm._process_messages()
+    assert (tmp_path / "a.pdf").read_bytes() == b"PDF"
+    assert sm.file_count == 1
+    store.add.assert_called_once()
+    assert sm._opened_links == set()
+
+
+@pytest.mark.asyncio
+async def test_poll_confirmed_resets_opened_links():
+    sm = _idle()
+    sm._opened_links.add("https://example.com/a")
+    sm._wx.save_session = AsyncMock(return_value=True)
+    await sm._handle_poll("confirmed")
+    assert sm.state == SessionState.CONNECTED
+    assert sm._opened_links == set()
