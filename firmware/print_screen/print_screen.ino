@@ -6,11 +6,11 @@
  *   - SH8601 显示（esp_lcd）     ：显示驱动在 display.cpp，无 LVGL 直绘
  *   - CST9220 触摸：已停用（2026-08-25 决策：放弃触摸唤醒，不再初始化）
  * 传输通道（编译期二选一，见 transport_config.h）：
- *   - TRANSPORT_BLE（默认，Task 10B 现役）：BLE 外设。空闲面板 ALDO3 彻底断电、
+ *   - TRANSPORT_WIFI（默认，现役）：WiFiManager 配网 + 每 1.5s 轮询主控
+ *     GET /api/screen/state（USB 常供电，不省电）。
+ *   - TRANSPORT_BLE（可回切变体，Task 10B）：BLE 外设。空闲面板 ALDO3 彻底断电、
  *     WiFi 关闭、低占空比广播（100ms）；主控连接后写 screen_state 驱动亮屏/熄屏/
  *     状态画面，绘制完成 notify link_status 作 ack，电池连接期间 notify 上报。
- *   - TRANSPORT_WIFI（回滚）：WiFiManager 配网 + 每 1.5s 轮询主控
- *     GET /api/screen/state（逻辑与 Task 10B 前一致）。
  * 功能：
  *   - 状态机：IDLE 显示二维码 / SCANNED 二维码变暗 / 服务中状态画面 / 打印中
  *   - 烧屏防护：亮度 60%、无操作/完成服务熄屏（亮屏仅在服务期间）
@@ -188,7 +188,7 @@ void showMaintenance(const char* s) {
   lcd_draw_text_center(TEXT_Y + jitter, s, LCD_COLOR_WHITE, LCD_COLOR_BLACK);
 }
 
-/* ==================== WiFi 通道（回滚用，逻辑与 Task 10B 前一致） ==================== */
+/* ==================== WiFi 通道（现役，USB 常供电不省电） ==================== */
 
 #if defined(TRANSPORT_WIFI)
 
@@ -300,6 +300,7 @@ void onServerDown(void) {
 void doScreenOff(void) {
   if (!screenOn) return;
   screenOn = false;
+  /* USB 常态供电：只软熄屏（DISPOFF），不切断面板电源（勿改成 ALDO3 断电）。 */
   lcd_screen_off();
   Serial.println("[lcd] screen off");
 }
@@ -358,7 +359,7 @@ void loop(void) {
 
 #endif // TRANSPORT_WIFI
 
-/* ==================== BLE 通道（现役，Task 10B） ==================== */
+/* ==================== BLE 通道（可回切变体，Task 10B） ==================== */
 
 #if defined(TRANSPORT_BLE)
 

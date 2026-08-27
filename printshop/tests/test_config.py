@@ -16,3 +16,18 @@ def test_config_render_dpi_default():
 def test_config_max_render_pages_default():
     c = Config()
     assert c.max_render_pages == 200
+
+
+def test_config_screen_ble_address_default_empty():
+    c = Config()
+    assert c.screen_ble_address == ""
+
+
+def test_config_screen_ble_address_env_off(monkeypatch):
+    monkeypatch.setenv("PRINTSHOP_SCREEN_BLE_ADDRESS", "off")
+    assert Config().screen_ble_address == ""
+
+
+def test_config_screen_ble_address_env_mac(monkeypatch):
+    monkeypatch.setenv("PRINTSHOP_SCREEN_BLE_ADDRESS", "20:6E:F1:16:D9:2E")
+    assert Config().screen_ble_address == "20:6E:F1:16:D9:2E"

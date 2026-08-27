@@ -5,15 +5,15 @@
 - 硬件：微雪 ESP32-C6-Touch-AMOLED-2.16（ESP32-C6、2.16 寸 480×480 AMOLED 电容触摸屏、USB-C）
 - 芯片：AXP2101 PMU（屏供电）、SH8601 显示（QSPI）、CST9220 触摸（I2C）
 - 架构：Arduino + esp32 core **3.3.x**，**不使用 LVGL**（UI 极简，esp_lcd 直绘）
-- 传输通道（2026-08 Task 10B 起）：**BLE（`TRANSPORT_BLE`，现役默认）**——主控 BLE Central 连接后写 GATT `screen_state` 驱动亮屏/熄屏/状态画面，空闲面板 ALDO3 断电、WiFi 关闭；WiFi 轮询保留为回滚变体（`-DTRANSPORT_WIFI`）。契约与运维见 §十
+- 传输通道（2026-08 Task 10B 起）：**WiFi（`TRANSPORT_WIFI`，现役默认，USB 常供电不省电）**——WiFiManager 配网 + HTTP 轮询主控；BLE 保留为可回切变体（`-DTRANSPORT_BLE`）。契约与运维见 §十
 
 ## 文件清单
 
 | 文件 | 说明 |
 |---|---|
-| `print_screen.ino` | 主程序：状态机、二维码、烧屏防护；**传输通道二选一**（默认 BLE：主控 GATT 写驱动渲染；回滚 WiFi：配网 + 轮询）；**触摸唤醒已移除（2026-08-25 决策），唤醒仅主控 BLE 写入 display=on（=管理员托盘），WiFi 变体亦无触摸** |
-| `transport_config.h` | 传输通道编译开关（Task 10B）：默认 `TRANSPORT_BLE`，可注入 `-DTRANSPORT_WIFI` 覆盖回滚（两宏同时定义编译报错），见 §二 |
-| `ble_link.cpp/.h` | BLE 外设层（现役通道）：GATT 服务/100ms 广播/60s 电池 notify/绘制完成 ack，见 §十 |
+| `print_screen.ino` | 主程序：状态机、二维码、烧屏防护；**传输通道二选一**（默认 WiFi：配网 + 轮询；BLE 可回切：主控 GATT 写驱动渲染）；**触摸唤醒已移除（2026-08-25 决策），唤醒仅主控推送 display=on（=管理员托盘），WiFi 变体亦无触摸** |
+| `transport_config.h` | 传输通道编译开关（Task 10B）：默认 `TRANSPORT_WIFI`，可注入 `-DTRANSPORT_BLE` 回切 BLE（两宏同时定义编译报错），见 §二 |
+| `ble_link.cpp/.h` | BLE 外设层（可回切变体）：GATT 服务/100ms 广播/60s 电池 notify/绘制完成 ack，见 §十 |
 | `display.h/.cpp` | **本项目自写**：无 LVGL 的显示驱动封装（esp_lcd 直绘 fillRect/点阵/文本） |
 | `lcd_touch.cpp/.h` | 微雪例程原样复制（CST9220 触摸；**2026-08-25 起停用**，保留文件备查，主程序不再 include） |
 | `user_config.h` | 微雪例程原样复制（引脚/显示参数，勿改引脚号） |
@@ -26,7 +26,7 @@
 另：`ble_spike/`（2026-08-25 新增）——Task 10B Step S0 的 BLE 可行性 spike 固件（一次性测量工具）：
 关 WiFi 纯 BLE（NimBLE）广播 + GATT `PRINTSHOP-SCREEN` 服务（screen_state 写 / battery_report notify /
 link_status read+notify），空闲 ALDO3 面板断电、写 display=on 冷启动画二维码。display.cpp 副本已拆出
-可重入的 `lcd_panel_power_on/off()`（S1 整合回 print_screen 的 TRANSPORT_BLE 开关，现役固件即此通道，
+可重入的 `lcd_panel_power_on/off()`（S1 整合回 print_screen 的 TRANSPORT_BLE 开关，BLE 可回切固件即此通道，
 GATT 契约/UUID 与 spike 完全一致）。
 PC 侧测量脚本在 `tools/poc/ble_spike_pc.py`、`tools/poc/ble_probe_stages.py`，
 实测数据与结论见 `docs/debug-logs-2026-08-25/task10b-s0-spike.md`。
@@ -50,7 +50,7 @@ PC 侧测量脚本在 `tools/poc/ble_spike_pc.py`、`tools/poc/ble_probe_stages.
      - 把 `01_Arduino_Libraries/XPowersLib` 整个文件夹拷入 Arduino 库目录
        （Windows 默认 `%USERPROFILE%\Documents\Arduino\libraries\`；若文档目录被 OneDrive 重定向则在 `D:\OneDrive\文档\Arduino\libraries\`）
 
-> 依赖注记：**ArduinoJson 两通道都需要**（BLE 变体解析 screen_state JSON 也用）；**WiFiManager 仅 `TRANSPORT_WIFI` 回滚变体需要**（现役 TRANSPORT_BLE 不配网、不开 WiFi，编译时未 include 该库）。
+> 依赖注记：**ArduinoJson 两通道都需要**（BLE 变体解析 screen_state JSON 也用）；**WiFiManager 仅 `TRANSPORT_WIFI` 现役变体需要**（BLE 可回切变体不配网、不开 WiFi，编译时未 include 该库）。
 
 > **AXP2101 电源管理必须装**：这块板子的屏幕供电走 AXP2101 PMU，固件里 `initPMU()` 在显示初始化之前调用，不初始化 PMU 屏不会亮（本任务最高发坑）。
 
@@ -63,7 +63,7 @@ PC 侧测量脚本在 `tools/poc/ble_spike_pc.py`、`tools/poc/ble_probe_stages.
 - **USB CDC On Boot：Enabled**（C6 原生 USB 直连；不开则串口监视器无日志）
 - 其余默认
 
-**传输通道二选一（Task 10B，`transport_config.h` 编译开关）**：默认 **`TRANSPORT_BLE`**（现役：BLE 广播 + GATT 收发，**不初始化 CST9220 触摸、不开 WiFi**）；回滚 **`TRANSPORT_WIFI`**（WiFiManager 配网 + HTTP 轮询，逻辑与 Task 10B 前一致）。用 arduino-cli `--build-property` 注入 `-DTRANSPORT_WIFI` 覆盖默认值即可，**无需改源码**（见下方命令）；两宏同时定义会在编译期报错。
+**传输通道二选一（Task 10B，`transport_config.h` 编译开关）**：默认 **`TRANSPORT_WIFI`**（现役：WiFiManager 配网 + HTTP 轮询，USB 常供电不省电）；BLE **`TRANSPORT_BLE`**（可回切：BLE 广播 + GATT 收发，**不初始化 CST9220 触摸、不开 WiFi**）。用 arduino-cli `--build-property` 注入 `-DTRANSPORT_BLE` 回切即可，**无需改源码**（见下方命令）；两宏同时定义会在编译期报错。
 
 ### 命令行（arduino-cli）等效路线
 
@@ -75,19 +75,19 @@ arduino-cli compile --fqbn $fqbn --build-path C:\arduino-build\print_screen firm
 arduino-cli upload -p COM3 --fqbn $fqbn --input-dir C:\arduino-build\print_screen
 ```
 
-**回滚变体（WiFi）编译**：注入编译宏覆盖默认 `TRANSPORT_BLE`（源码零改动）：
+**BLE 可回切变体编译**：注入编译宏覆盖默认 `TRANSPORT_WIFI`（源码零改动）：
 
 ```powershell
-arduino-cli compile --fqbn $fqbn --build-property build.extra_flags=-DTRANSPORT_WIFI --build-path C:\arduino-build\print_screen_wifi firmware\print_screen
+arduino-cli compile --fqbn $fqbn --build-property compiler.cpp.extra_flags=-DTRANSPORT_BLE --build-path C:\arduino-build\print_screen_ble firmware\print_screen
 ```
 
-注意：esp32 core 的 `build.extra_flags` 默认值含 ESP32/CDC 等必需宏，注入 `-DTRANSPORT_WIFI` 时**必须保留默认全量宏仅做追加**——只传一个宏会让 WiFiManager 编译崩（2026-08-25 实踩，见计划修订记录之五）。
+注意：必须注入 `compiler.cpp.extra_flags`（只追加编译宏），**不要**覆盖 `build.extra_flags`——esp32 core 的 `build.extra_flags` 默认值含 ESP32/CDC 等必需宏，覆盖只传一个宏会让编译崩（2026-08-25 实踩，见计划修订记录之五）。
 
 注意：esp32 工具链的 riscv32 链接器**不能处理中文/非 ASCII 路径**，`--build-path` 与 arduino-cli 数据目录必须用纯 ASCII 路径（如 `C:\arduino-build`、`C:\arduino15`）。
 
-## 三、编译前修改主控 IP（仅 TRANSPORT_WIFI 回滚变体）
+## 三、编译前修改主控 IP（仅 TRANSPORT_WIFI 现役变体）
 
-现役 TRANSPORT_BLE 不开 WiFi、不连路由器，此配置不用；绑定关系在主控侧 `config.py screen_ble_address`（见 §十）。
+BLE 可回切变体不开 WiFi、不连路由器，此配置不用；绑定关系在主控侧 `config.py screen_ble_address`（见 §十）。
 `print_screen.ino` 的 `TRANSPORT_WIFI` 分支顶部 `SERVER_IP` 写死主控固定 IP（默认 `192.168.31.171`，当前店内实际 IP）：
 
 ```cpp
@@ -103,20 +103,20 @@ arduino-cli compile --fqbn $fqbn --build-property build.extra_flags=-DTRANSPORT_
 2. 上传失败 / 认不出端口 → **按住板子侧边 BOOT 键再重新上电**进入下载模式，再正常上传。
 3. 烧完开串口监视器（115200）看日志；无输出先查 **USB CDC On Boot 是否 Enabled**。
 4. 期望日志顺序：
-   - WiFi 回滚变体：`[hw] AXP2101 PMU init done` → `[hw] SH8601 display init done` → `[net] WiFi connected, IP=...`（无 `[hw] CST9220 touch init done`，触摸已停用）；
-   - BLE 现役变体：`[hw] AXP2101 PMU init done` → `[ble] advertising as PRINT-SCREEN, interval=100ms` → `[ble] MAC=...`（public 地址，主控绑定用）；**开机不初始化显示**——面板首次点亮推迟到第一次 display=on 推送（冷启动 ~1.1s 已被接受，空闲期零面板功耗）；建连时见 `[ble] connected` / `[ble] MTU negotiated: 517`。
+   - WiFi 现役变体：`[hw] AXP2101 PMU init done` → `[hw] SH8601 display init done` → `[net] WiFi connected, IP=...`（无 `[hw] CST9220 touch init done`，触摸已停用）；
+   - BLE 可回切变体：`[hw] AXP2101 PMU init done` → `[ble] advertising as PRINT-SCREEN, interval=100ms` → `[ble] MAC=...`（public 地址，主控绑定用）；**开机不初始化显示**——面板首次点亮推迟到第一次 display=on 推送（冷启动 ~1.1s 已被接受，空闲期零面板功耗）；建连时见 `[ble] connected` / `[ble] MTU negotiated: 517`。
 
-## 五、首次配网流程（仅 TRANSPORT_WIFI 回滚变体）
+## 五、首次配网流程（仅 TRANSPORT_WIFI 现役变体）
 
 1. 首次上电固件自建热点 **PRINT-SETUP**。
 2. 手机连上该热点 → 自动弹出配网页（不弹则浏览器访问 `192.168.4.1`）→ 填店内 WiFi 密码 → 保存。
 3. 板子重启后自动连店内 WiFi 并轮询主控；屏幕先显示“连接中...”，拉到状态后显示二维码。
 4. 以后想重配：改 `wm.setConfigPortalTimeout(180)` 前的逻辑，或按住 BOOT 烧一次空程序即可（也可给 WiFiManager 加 reset 按钮，首版未做）。
-5. 现役 TRANSPORT_BLE 变体**免配网**：设备 public 地址直连，主控侧绑定见 §十与 `docs/handoff-2026-08-26-task10b-s2-s4.md`。
+5. BLE 可回切变体**免配网**：设备 public 地址直连，主控侧绑定见 §十与 `docs/handoff-2026-08-26-task10b-s2-s4.md`。
 
-## 六、路由器 AP 隔离警示（仅 TRANSPORT_WIFI 回滚变体需检查）
+## 六、路由器 AP 隔离警示（仅 TRANSPORT_WIFI 现役变体需检查）
 
-⚠️ **店内路由器必须关闭 AP 隔离 / 客户端隔离**。开启后小屏与大屏（主控）虽然都连着店内 WiFi，但互相不可达，小屏将一直显示“连接中/系统维护中”。这是现场最高发坑，务必在部署前检查。现役 BLE 通道走蓝牙直连、不经 WiFi/路由器，不受 AP 隔离影响。
+⚠️ **店内路由器必须关闭 AP 隔离 / 客户端隔离**。开启后小屏与大屏（主控）虽然都连着店内 WiFi，但互相不可达，小屏将一直显示“连接中/系统维护中”。这是现场最高发坑，务必在部署前检查。BLE 可回切通道走蓝牙直连、不经 WiFi/路由器，不受 AP 隔离影响。
 
 ## 七、实机验证 checklist
 
@@ -154,7 +154,7 @@ arduino-cli compile --fqbn $fqbn --build-property build.extra_flags=-DTRANSPORT_
 
 ## 九、电池电量上报（2026-08 装机电池后新增）
 
-板子带锂电池时，固件把电量上报主控，**管理页（/admin）状态栏显示剩余电量**；小屏 UI 不显示。现役 TRANSPORT_BLE 走 `battery_report` notify（见 §十 GATT 契约）；下述 HTTP 捎带参数仅 WiFi 回滚变体使用，两通道电池字段语义一致（`pct/mv/chg/vbus`）。
+板子带锂电池时，固件把电量上报主控，**管理页（/admin）状态栏显示剩余电量**；小屏 UI 不显示。现役 TRANSPORT_WIFI 随 HTTP 轮询捎带 batt_* 参数；BLE 可回切变体走 `battery_report` notify（见 §十 GATT 契约），两通道电池字段语义一致（`pct/mv/chg/vbus`）。
 
 - **读取**：AXP2101 自带电量计寄存器直读百分比（`getBatteryPercent`，非电压估算），另读电压 mV、
   充电中（`isCharging`）、USB 接入（`isVbusIn`）。`axp2101_bsp.cpp` 末尾的两个函数
@@ -178,11 +178,12 @@ arduino-cli compile --fqbn $fqbn --build-property build.extra_flags=-DTRANSPORT_
 - **充电管理无需固件干预**：AXP2101 硬件自动完成 USB/电池供电切换与充电（充电参数
   500mA 恒流/50mA 截止在 `Custom_PmicRegisterInit()` 已配好）。
 
-## 十、BLE 传输架构（Task 10B，现役通道）
+## 十、BLE 传输架构（Task 10B，可回切变体）
 
-2026-08 起现役传输通道为 **TRANSPORT_BLE**（`transport_config.h` 默认）；旧 WiFi 轮询路径完整
-保留为回滚变体（见 §二）。主控侧 BLE Central 实现在 `printshop/ble_link.py`（winrt 直连，
-不走 bleak），运维语义（绑定/回滚/自检/僵尸连接）见 `docs/handoff-2026-08-26-task10b-s2-s4.md`。
+2026-08 起现役传输通道为 **TRANSPORT_WIFI**（`transport_config.h` 默认，USB 常供电不省电）；
+BLE 路径完整保留为可回切变体（见 §二）。主控侧 BLE Central 实现在 `printshop/ble_link.py`
+（winrt 直连，不走 bleak），运维语义（绑定/回切/自检/僵尸连接）见
+`docs/handoff-2026-08-26-task10b-s2-s4.md`。
 
 - **工作模型**：空闲期固件仅 BLE 广播（100ms，CPU 常醒——低功耗路线 A，估 8~20mA，见计划
   Task 10B 修订记录之四/之五）；主控需要亮屏时**主动连接** → 写 `screen_state` → 固件面板上电
@@ -208,6 +209,5 @@ arduino-cli compile --fqbn $fqbn --build-property build.extra_flags=-DTRANSPORT_
   display=on → 首次 `lcd_init` / 断电后 `lcd_panel_power_on()` 冷启动
   （`SH8601_SLEEP_OUT_DELAY_MS=120`，全链路 ~2.85s；快速重醒窗口内免建连，仅冷启动 ~0.65s）。
   DMA 同步/自愈与烧屏防护策略与 WiFi 变体一致（见 §八）。
-- **主控侧运维**：绑定 `config.py screen_ble_address`（或 env `PRINTSHOP_SCREEN_BLE_ADDRESS=off`
-  回滚 WiFi 轮询）；诊断 `--ble-selftest`；冒烟 `scripts/smoke_dist.ps1`；电池置灰
+- **主控侧运维**：默认空串走 WiFi 轮询；BLE 回切时填 `config.py screen_ble_address`（或 env `PRINTSHOP_SCREEN_BLE_ADDRESS` 设 MAC）；诊断 `--ble-selftest`；冒烟 `scripts/smoke_dist.ps1`；电池置灰
   `stale_after` = 心跳间隔 + 300s。详见交接文档。

@@ -73,6 +73,7 @@ def _factory(made, fail_first_write=False):
 
 def _cfg(**kw):
     cfg = Config()
+    cfg.screen_ble_address = "20:6E:F1:16:D9:2E"  # 测试直连 BleScreenLink 需显式给 MAC（默认已改 WiFi 空串）
     cfg.ble_fast_rewake_seconds = 0.05
     cfg.ble_heartbeat_seconds = 9999.0  # 除心跳专项外禁用心跳干扰
     for k, v in kw.items():
