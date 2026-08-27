@@ -62,6 +62,17 @@ void lcd_draw_text(int x, int y, const char* s, uint16_t fg, uint16_t bg);
 /* 水平居中绘制一行文本 */
 void lcd_draw_text_center(int y, const char* s, uint16_t fg, uint16_t bg);
 
+/* UTF-8 文本宽度（每字形 16px * scale，全角） */
+int lcd_text_width_scaled(const char* s, int scale);
+
+/* 在 (x, y) 绘制一行整数倍缩放文本（scale>=1，字高 16*scale） */
+void lcd_draw_text_scaled(int x, int y, const char* s, int scale,
+                          uint16_t fg, uint16_t bg);
+
+/* 水平居中绘制一行整数倍缩放文本 */
+void lcd_draw_text_center_scaled(int y, const char* s, int scale,
+                                 uint16_t fg, uint16_t bg);
+
 /* 息屏：全黑填充 + DISPOFF（AMOLED 黑像素不发光，物理等效息屏） */
 void lcd_screen_off(void);
 

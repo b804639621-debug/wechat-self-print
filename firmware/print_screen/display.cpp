@@ -304,6 +304,80 @@ void lcd_draw_text_center(int y, const char* s, uint16_t fg, uint16_t bg) {
   lcd_draw_text(x, y, s, fg, bg);
 }
 
+int lcd_text_width_scaled(const char* s, int scale) {
+  if (scale < 1) scale = 1;
+  int n = 0;
+  const char* p = s;
+  while (*p) { utf8_next(p); n++; }
+  return n * 16 * scale;
+}
+
+void lcd_draw_text_scaled(int x, int y, const char* s, int scale,
+                          uint16_t fg, uint16_t bg) {
+  if (scale < 1) scale = 1;
+  int h = 16 * scale;
+  if (y >= LCD_H || y + h <= 0) return;
+
+  /* 按 STRIP_H 行条带合成并推送：每个条带先铺满底色，再按字形位图把前景像素
+   * 放大为 scale×scale 方块。scale=1 时与原有 16px 文本逐像素等价。 */
+  for (int y0 = 0; y0 < h; y0 += STRIP_H) {
+    int rows = STRIP_H;
+    if (y0 + rows > h) rows = h - y0;
+    int yscr = y + y0;
+    int skip = 0;
+    if (yscr < 0) skip = -yscr;                /* 上沿裁剪 */
+    if (skip >= rows) continue;
+    int out = rows - skip;
+    if (yscr + skip >= LCD_H) break;           /* 已过屏底 */
+    if (yscr + skip + out > LCD_H) out = LCD_H - (yscr + skip);
+    if (out <= 0) continue;
+
+    uint16_t* rb = rb_acquire();
+    for (int r = 0; r < out; r++) {
+      uint16_t* row = rb + (size_t)r * LCD_W;
+      for (int c = 0; c < LCD_W; c++) row[c] = lcd_px(bg);
+    }
+
+    const char* p = s;
+    int glyphIndex = 0;
+    while (*p) {
+      uint32_t cp = utf8_next(p);
+      int glyph_x = x + glyphIndex * (16 * scale);
+      glyphIndex++;
+      if (glyph_x >= LCD_W) break;             /* 右侧已完全出屏，后续字形更靠右 */
+      if (glyph_x + 16 * scale <= 0) continue; /* 左侧完全出屏 */
+      const glyph_t* g = font_find(cp);
+
+      for (int r = 0; r < out; r++) {
+        int sr = (y0 + skip + r) / scale;      /* 源字形行（0..15） */
+        if (sr < 0 || sr >= 16) continue;
+        int bits;
+        if (g) bits = ((int)g->bmp[sr * 2] << 8) | g->bmp[sr * 2 + 1];
+        else   bits = 0xFFFF;                  /* 未收录字形：全填方块兜底 */
+        uint16_t* row = rb + (size_t)r * LCD_W;
+        for (int sc = 0; sc < 16; sc++) {
+          if (!(bits & (0x8000 >> sc))) continue;
+          int dst_x = glyph_x + sc * scale;
+          for (int dx = 0; dx < scale; dx++) {
+            int sx = dst_x + dx;
+            if (sx >= 0 && sx < LCD_W) row[sx] = lcd_px(fg);
+          }
+        }
+      }
+    }
+    rb_push(rb, 0, yscr + skip, LCD_W, yscr + skip + out);
+  }
+}
+
+void lcd_draw_text_center_scaled(int y, const char* s, int scale,
+                                 uint16_t fg, uint16_t bg) {
+  if (scale < 1) scale = 1;
+  int w = lcd_text_width_scaled(s, scale);
+  int x = (LCD_W - w) / 2;
+  if (x < 0) x = 0;
+  lcd_draw_text_scaled(x, y, s, scale, fg, bg);
+}
+
 void lcd_screen_off(void) {
   lcd_clear(LCD_COLOR_BLACK);                 /* AMOLED 黑像素不发光，物理等效息屏 */
   esp_lcd_panel_disp_on_off(panel, false);    /* 更彻底的 displayOff 命令 */

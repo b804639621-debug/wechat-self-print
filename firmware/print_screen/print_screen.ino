@@ -53,6 +53,8 @@
 #define QR_MAX_BOTTOM    456                 /* 二维码下沿上限（页脚在 460） */
 #define FOOTER_Y         460                 /* 页脚“微信扫码·传文件打印” */
 #define TEXT_Y           232                 /* 单行状态文字垂直居中位置 */
+#define STATUS_TEXT_SCALE 4                 /* 大号状态文字放大倍数：字高 64px */
+#define TEXT_Y_LARGE      ((LCD_H - 16 * STATUS_TEXT_SCALE) / 2)  /* 大号状态文字垂直居中 */
 #define MAINT_SHIFT_MS   (30UL * 1000)       /* 维护态白字防烧屏：每 30s 换一次绘制位置 */
 #define BATT_READ_INTERVAL_MS (60UL * 1000)  /* 电池缓存读取间隔（电量变化慢，I2C 与 PMU 共总线不宜高频） */
 
@@ -142,30 +144,18 @@ void drawQR(const String& content, bool dim) {
   lcd_draw_text_center(FOOTER_Y, "微信扫码·传文件打印", LCD_COLOR_BLACK, LCD_COLOR_WHITE);
 }
 
-/* 服务中状态画面（状态文案见需求 spec §6.1 表） */
+/* 服务中状态画面（任务⑤：扫码后的服务态统一为大号“打印中”） */
 void showStatus(const char* state, int fileCount, const String& qr) {
   if (strcmp(state, "SCANNED") == 0) {
     drawQR(qr, true);   /* 二维码变暗 */
     /* 确认引导文案渲染在页脚位置（覆盖二维码页脚，覆盖区同为 16px 高） */
     lcd_draw_text_center(FOOTER_Y, "请在手机上确认登录", LCD_COLOR_BLACK, LCD_COLOR_WHITE);
-  } else if (strcmp(state, "CONNECTED") == 0) {
-    /* 收完一批文件后主控回到 CONNECTED 等更多文件/店员操作（spec §8 的 READY 并入
-     * CONNECTED 实现）；此时顾客更关心"文件已收到"，fileCount>0 与 RECEIVING 同文案 */
-    if (fileCount > 0) {
-      char buf[40];
-      snprintf(buf, sizeof(buf), "已收到 %d 个文件，请稍候", fileCount);
-      showStatusText(buf);
-    } else {
-      showStatusText("已连接，请发送文件");
-    }
-  } else if (strcmp(state, "RECEIVING") == 0) {
-    char buf[40];
-    snprintf(buf, sizeof(buf), "已收到 %d 个文件，请稍候", fileCount);
-    showStatusText(buf);
-  } else if (strcmp(state, "PRINTING") == 0) {
-    showStatusText("打印中，请稍候");
+  } else if (strcmp(state, "CONNECTED") == 0 ||
+             strcmp(state, "RECEIVING") == 0 ||
+             strcmp(state, "PRINTING") == 0) {
+    showStatusTextLarge("打印中");
   } else {
-    showStatusText("服务中，请稍候");
+    showStatusTextLarge("服务中，请稍候");
   }
 }
 
@@ -173,6 +163,13 @@ void showStatus(const char* state, int fileCount, const String& qr) {
 void showStatusText(const char* s) {
   lcd_clear(LCD_COLOR_WHITE);
   lcd_draw_text_center(TEXT_Y, s, LCD_COLOR_BLACK, LCD_COLOR_WHITE);
+}
+
+/* 白底黑字大号状态文字（任务⑤：扫码后服务态统一大号“打印中”） */
+void showStatusTextLarge(const char* s) {
+  lcd_clear(LCD_COLOR_WHITE);
+  lcd_draw_text_center_scaled(TEXT_Y_LARGE, s, STATUS_TEXT_SCALE,
+                              LCD_COLOR_BLACK, LCD_COLOR_WHITE);
 }
 
 void showMaintenance(const char* s) {
@@ -429,8 +426,15 @@ void onScreenState(const char* state, bool displayOn, const String& qr, int file
       }
     }
   } else {
-    /* 服务流程中：仅状态/文件数变化时重绘；wasOff 强制重绘（GRAM 已丢失） */
-    String key = String(curState) + "_" + fileCount;
+    /* 服务流程中：仅状态/文件数变化时重绘；wasOff 强制重绘（GRAM 已丢失）。
+     * CONNECTED/RECEIVING/PRINTING 文案统一为大号“打印中”，不再依赖 fileCount，
+     * 因此这些状态的 key 只取状态名，避免收到第 2 个文件时无意义整屏重绘。 */
+    String key;
+    if (curState == "CONNECTED" || curState == "RECEIVING" || curState == "PRINTING") {
+      key = curState;
+    } else {
+      key = String(curState) + "_" + fileCount;
+    }
     if (wasOff || key != lastStatusKey) {
       lastStatusKey = key;
       qrShown = "";
