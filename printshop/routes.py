@@ -78,6 +78,9 @@ class PrintBatchBody(BaseModel):
 class AppContext:
     """路由共享上下文：配置、数据层、会话状态机、WS 客户端集与广播。"""
 
+    # WiFi 正常轮询 1.5s、故障退避 5s，10s 阈值留足余量
+    screen_online_threshold_seconds: float = 10.0
+
     def __init__(self, cfg, store, wx, sm, ble=None):
         self.cfg = cfg
         self.store = store
@@ -88,6 +91,40 @@ class AppContext:
         self.clients: set[WebSocket] = set()
         # 小屏电池最近一次上报（固件轮询 /api/screen/state 时捎带 batt_* 参数），空 = 未上报
         self.device: dict = {}
+        # 小屏最近一次 WiFi 轮询时间；None = 尚未见过任何轮询
+        self.screen_seen_at: datetime | None = None
+
+    def _screen_online(self) -> bool:
+        """按当前 screen_seen_at 判断小屏是否在线（未上报视为离线）。"""
+        if self.screen_seen_at is None:
+            return False
+        age = (datetime.now() - self.screen_seen_at).total_seconds()
+        return age < self.screen_online_threshold_seconds
+
+    def mark_screen_seen(self) -> bool:
+        """记录一次 WiFi 轮询；返回在线状态是否由离线变为在线（首次也算 True）。"""
+        now = datetime.now()
+        was_online = self._screen_online()
+        self.screen_seen_at = now
+        return not was_online
+
+    def screen_payload(self) -> dict:
+        """管理后台用的小屏连接状态快照。"""
+        last_seen_at = (self.screen_seen_at.isoformat(timespec="seconds")
+            if self.screen_seen_at is not None else None)
+        return {
+            "transport": "wifi",
+            "online": self._screen_online(),
+            "last_seen_at": last_seen_at,
+            "threshold_seconds": self.screen_online_threshold_seconds,
+        }
+
+    def device_payload(self) -> dict:
+        """统一 device 广播载荷：电池 + 小屏连接状态。"""
+        return {
+            "battery": self.battery_payload(),
+            "screen": self.screen_payload(),
+        }
 
     def update_battery(self, report: dict) -> bool:
         """存入电池上报；返回 True = 值得广播的变化（首次或 pct/充电态/USB态 变化）。
@@ -291,9 +328,12 @@ def build_router(ctx: AppContext) -> APIRouter:
     async def screen_state(batt_pct: str | None = None, batt_mv: str | None = None,
                            batt_chg: str | None = None, batt_vbus: str | None = None):
         """小屏轮询主状态；固件捎带 batt_* 电量参数时更新设备电量（变化时广播 device）。"""
+        # 无论是否捎带电量，轮询本身即代表小屏 WiFi 在线，先记录上报时间。
+        screen_changed = ctx.mark_screen_seen()
         report = _parse_battery_report(batt_pct, batt_mv, batt_chg, batt_vbus)
-        if report is not None and ctx.update_battery(report):
-            ctx.emit("device", battery=ctx.battery_payload())
+        battery_changed = report is not None and ctx.update_battery(report)
+        if screen_changed or battery_changed:
+            ctx.emit("device", **ctx.device_payload())
         return {**sm.screen_state(), "battery": ctx.battery_payload()}
 
     @router.post("/api/screen/wake")
@@ -440,9 +480,10 @@ def build_router(ctx: AppContext) -> APIRouter:
         try:
             await ws.send_text(
                 json.dumps({"type": "session", **sm.screen_state()}, ensure_ascii=False))
-            # 电量快照紧随 session：管理页打开即有电池指示（未上报时 battery 为 null）
+            # device 快照紧随 session：管理页打开即有电池 + 小屏连接状态
+            # （未上报时 battery 为 null、screen.last_seen_at 为 null）
             await ws.send_text(
-                json.dumps({"type": "device", "battery": ctx.battery_payload()},
+                json.dumps({"type": "device", **ctx.device_payload()},
                            ensure_ascii=False))
             while True:
                 await ws.receive_text()

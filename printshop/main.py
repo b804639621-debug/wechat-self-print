@@ -99,7 +99,7 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
     if cfg.screen_ble_address:
         def on_ble_battery(report: dict) -> None:
             if ctx.update_battery(report):
-                ctx.emit("device", battery=ctx.battery_payload())
+                ctx.emit("device", **ctx.device_payload())
         ble = BleScreenLink(cfg, on_battery=on_ble_battery)
     ctx.ble = ble
 

@@ -24,6 +24,8 @@
   #device-batt { color: #9ba3af; font-size: 13px; white-space: nowrap; cursor: default; }
   #device-batt.batt-low { color: #ff5252; font-weight: 600; }
   #device-batt.batt-stale { opacity: .5; }
+  #device-screen { color: #9ba3af; font-size: 13px; white-space: nowrap; cursor: default; }
+  #device-screen.screen-off { color: #ff5252; font-weight: 600; }
   #bar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
   #sound-toggle { background: #37404d; color: #fff; border: none; border-radius: 6px;
                   padding: 8px 16px; font-size: 15px; cursor: pointer; }
@@ -156,6 +158,7 @@
     <span id="session-count"></span>
     <div id="bar-right">
       <span id="device-batt" title="小屏未上报电量">🔋 --</span>
+      <span id="device-screen" title="小屏连接状态">📡 --</span>
       <button id="sound-toggle" title="新文件提示音">🔔 声音:开</button>
       <button id="finish-btn">完成服务</button>
     </div>
@@ -268,6 +271,7 @@
     checked: {},
     ws: null,
     battery: null,
+    screen: null,
     loadingPreview: false,
     previewUrl: null,
     saving: false,
@@ -443,6 +447,37 @@
     el.className = cls.join(" ");
     el.title = "电压 " + (b.mv / 1000).toFixed(2) + "V · 上报于 " + (b.updated_at || "--") +
       (stale ? "（数据陈旧）" : "");
+  }
+
+  // 小屏 WiFi 连接状态：后端广播快照 + 前端按 last_seen_at 定时重算过期。
+  // 在线阈值由后端下发；离线时红色提示，title 显示最近上报时间。
+  function renderScreen() {
+    var el = $("device-screen");
+    var s = S.screen;
+    if (!s) {
+      el.textContent = "📡 小屏：--";
+      el.title = "等待小屏上报";
+      el.className = "";
+      return;
+    }
+    var online = false;
+    if (s.last_seen_at) {
+      var age = (Date.now() - new Date(s.last_seen_at).getTime()) / 1000;
+      var threshold = s.threshold_seconds || 10;
+      online = age >= 0 && age < threshold;
+    }
+    el.textContent = "📡 小屏：" + (online ? "在线" : "离线");
+    if (s.last_seen_at) {
+      var d = new Date(s.last_seen_at);
+      var hh = ("0" + d.getHours()).slice(-2);
+      var mm = ("0" + d.getMinutes()).slice(-2);
+      var ss = ("0" + d.getSeconds()).slice(-2);
+      el.title = "最近上报 " + hh + ":" + mm + ":" + ss +
+        (online ? "" : "（已断开）");
+    } else {
+      el.title = "等待小屏上报";
+    }
+    el.className = online ? "" : "screen-off";
   }
 
   function showNote(text) {
@@ -768,6 +803,10 @@
         if (d.message) showNote(d.message);
       } else if (d.type === "device") {
         S.battery = d.battery;
+        if (d.screen !== undefined) {
+          S.screen = d.screen;
+          renderScreen();
+        }
         renderDevice();
       } else if (d.type === "new_job") {
         beep();
@@ -973,7 +1012,9 @@
       if (d.message) showNote(d.message);
     }).catch(function () {});
 
+    renderScreen();  // 页面打开时先显示等待/占位状态
     setInterval(renderDevice, 60000);  // 定时重算电量陈旧置灰
+    setInterval(renderScreen, 5000);   // 定时按 last_seen_at 重算小屏在线状态
 
     initPrinters();
     refreshJobs(true).then(function () { updateSettingsButtons(); });

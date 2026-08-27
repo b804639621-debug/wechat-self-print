@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -675,3 +676,54 @@ def test_ws_admin_device_snapshot_and_change_push(tmp_path):
             msg = ws.receive_json()
             assert msg["type"] == "device"
             assert msg["battery"]["pct"] == 80
+
+
+def test_screen_payload_initial(tmp_path):
+    """screen_payload 初始状态：WiFi 通道、离线、无最近上报。"""
+    app, ctx = _app(tmp_path)
+    payload = ctx.screen_payload()
+    assert payload["transport"] == "wifi"
+    assert payload["online"] is False
+    assert payload["last_seen_at"] is None
+    assert payload["threshold_seconds"] == 10.0
+
+
+def test_mark_screen_seen_first_and_repeat(tmp_path):
+    """首次 mark_screen_seen 视为离线→在线返回 True；已在线再调返回 False。"""
+    app, ctx = _app(tmp_path)
+    assert ctx.screen_seen_at is None
+    assert ctx.mark_screen_seen() is True
+    assert ctx.mark_screen_seen() is False
+
+
+def test_screen_payload_online_by_age(tmp_path):
+    """screen_payload.online 按 last_seen_at 年龄判定。"""
+    app, ctx = _app(tmp_path)
+    ctx.screen_seen_at = datetime.now() - timedelta(seconds=20)
+    assert ctx.screen_payload()["online"] is False
+    ctx.screen_seen_at = datetime.now() - timedelta(seconds=2)
+    assert ctx.screen_payload()["online"] is True
+
+
+def test_screen_state_ws_receives_screen_online_broadcast(tmp_path):
+    """GET /api/screen/state 后，管理后台 WS 收到一条含 screen.online=True 的 device 广播。"""
+    app, ctx = _app(tmp_path)
+    with TestClient(app) as c:
+        with c.websocket_connect("/ws/admin") as ws:
+            assert ws.receive_json()["type"] == "session"
+            initial = ws.receive_json()
+            assert initial["type"] == "device"
+            r = c.get("/api/screen/state")
+            assert r.status_code == 200
+            msg = ws.receive_json()
+            assert msg["type"] == "device"
+            assert msg["screen"]["online"] is True
+
+
+def test_screen_state_response_has_no_screen_field(tmp_path):
+    """小屏轮询响应保持原契约：只有 battery 等原字段，不塞 screen 字段。"""
+    app, _ = _app(tmp_path)
+    r = TestClient(app).get("/api/screen/state")
+    body = r.json()
+    assert "battery" in body
+    assert "screen" not in body
