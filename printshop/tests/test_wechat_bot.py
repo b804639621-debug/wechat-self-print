@@ -136,6 +136,26 @@ async def test_fetch_messages_passthrough_vendor_normalized_list():
 
 
 @pytest.mark.asyncio
+async def test_send_text_ensures_started_and_forwards_to_vendor():
+    c = _client()
+    c._bot.client = None
+    c._bot.start = AsyncMock()
+    c._bot.send_text = AsyncMock(return_value=True)
+    assert await c.send_text("😊") is True
+    c._bot.start.assert_awaited_once()
+    c._bot.send_text.assert_awaited_once_with("😊")
+
+
+@pytest.mark.asyncio
+async def test_send_text_returns_vendor_false():
+    c = _client()
+    c._bot.client = AsyncMock()
+    c._bot.send_text = AsyncMock(return_value=False)
+    assert await c.send_text("x") is False
+    c._bot.send_text.assert_awaited_once_with("x")
+
+
+@pytest.mark.asyncio
 async def test_download_returns_bytes_via_temp_file():
     c = _client()
 

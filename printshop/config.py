@@ -26,6 +26,8 @@ class Config:
     ble_heartbeat_seconds: float = 900.0            # 空闲期周期连接拉电池+在线心跳
     auto_open_links: bool = True
     auto_open_max_links: int = 3
+    login_greeting_text: str = "😊"
+    send_login_greeting: bool = True
 
     def __post_init__(self) -> None:
         """环境变量 PRINTSHOP_SCREEN_BLE_ADDRESS 覆盖/禁用 BLE 地址（部署回滚开关）。"""

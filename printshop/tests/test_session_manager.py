@@ -106,6 +106,81 @@ async def test_poll_confirmed_transitions_to_connected_without_complete_login():
 
 
 @pytest.mark.asyncio
+async def test_poll_confirmed_sends_login_greeting():
+    cfg = Config()
+    sm = _idle(cfg)
+    sm._wx.save_session = AsyncMock(return_value=True)
+    sm._wx.send_text = AsyncMock(return_value=True)
+    await sm._handle_poll("confirmed")
+    assert sm.state == SessionState.CONNECTED
+    sm._wx.send_text.assert_awaited_once_with(cfg.login_greeting_text)
+    assert sm._greeting_sent is True
+
+
+@pytest.mark.asyncio
+async def test_poll_confirmed_greeting_exception_keeps_connected():
+    sm = _idle()
+    sm._wx.save_session = AsyncMock(return_value=True)
+
+    async def boom(message):
+        raise RuntimeError("send failed")
+
+    sm._wx.send_text = boom
+    await sm._handle_poll("confirmed")
+    assert sm.state == SessionState.CONNECTED
+    assert sm._greeting_sent is True
+
+
+@pytest.mark.asyncio
+async def test_send_login_greeting_only_once_per_login_session():
+    sm = _idle()
+    sm._wx.send_text = AsyncMock(return_value=True)
+    await sm._send_login_greeting()
+    await sm._send_login_greeting()
+    assert sm._wx.send_text.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_finish_service_resets_greeting_sent(tmp_path):
+    cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
+    sm = SessionManager(cfg, MagicMock(), MagicMock())
+    sm._wx.logout = AsyncMock()
+    sm._wx.send_text = AsyncMock(return_value=True)
+    await sm._send_login_greeting()
+    assert sm._greeting_sent is True
+    await sm.finish_service()
+    assert sm._greeting_sent is False
+
+
+@pytest.mark.asyncio
+async def test_send_login_greeting_disabled_by_config():
+    cfg = Config(); cfg.send_login_greeting = False
+    sm = _idle(cfg)
+    sm._wx.save_session = AsyncMock(return_value=True)
+    sm._wx.send_text = AsyncMock(return_value=True)
+    await sm._handle_poll("confirmed")
+    assert sm.state == SessionState.CONNECTED
+    sm._wx.send_text.assert_not_awaited()
+    assert sm._greeting_sent is False
+
+
+@pytest.mark.asyncio
+async def test_send_login_greeting_skips_when_wx_has_no_send_text():
+    class _FakeWx:
+        async def save_session(self):
+            return True
+
+        async def logout(self):
+            pass
+
+    sm = SessionManager(Config(), _FakeWx(), MagicMock())
+    sm.display = True
+    await sm._handle_poll("confirmed")
+    assert sm.state == SessionState.CONNECTED
+    assert sm._greeting_sent is True
+
+
+@pytest.mark.asyncio
 async def test_poll_expired_refreshes_qr():
     sm = _idle()
     sm._wx.get_qr = AsyncMock(return_value=(b"P", "https://login.weixin.qq.com/l/new"))

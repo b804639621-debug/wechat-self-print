@@ -118,6 +118,7 @@ class SessionManager:
         self._no_file_reminder = False
         self._seen_msg_ids: set[str] = set()
         self._opened_links: set[str] = set()
+        self._greeting_sent = False
         self._reconnect_failures = 0
         self._last_save_ts = time.monotonic()
         # finish_service 与 run_loop 掉线路径（_logout_to_idle_with_fresh_qr）互斥
@@ -165,11 +166,39 @@ class SessionManager:
             # 保留此处保存：SessionManager 走 wx.poll_login()→vendor _poll_login_once()
             # 直连路径，不会触发 vendor check_login_status() 内部的 save_session
             # （direct_bot.py:324 仅在 check_login_status 路径生效），故必须显式保存。
-            await self._save_session()
+            # _save_session 内部已捕获异常并返回 False；这里再加一层防御，
+            # 确保保存失败也不会跳过登录成功后的欢迎表情发送。
+            try:
+                await self._save_session()
+            except Exception:
+                pass
+            await self._send_login_greeting()
         elif status == "expired":
             if self.state == SessionState.SCANNED:
                 self._transition(SessionState.IDLE)
             await self._refresh_qr()
+
+    async def _send_login_greeting(self) -> None:
+        """扫码确认登录后，主动向文件传输助手发送一条欢迎表情。
+
+        发送失败/超时只记录警告，绝不影响登录状态流转；同一登录会话只尝试一次。
+        """
+        if self._greeting_sent:
+            return
+        if not self._cfg.send_login_greeting:
+            return
+        message = self._cfg.login_greeting_text
+        if not message:
+            return
+        # 先置位：无论发送成功/失败，一次登录最多尝试一次
+        self._greeting_sent = True
+        send_text = getattr(self._wx, "send_text", None)
+        if send_text is None:
+            return
+        try:
+            await asyncio.wait_for(send_text(message), timeout=10)
+        except Exception as exc:
+            _log.warning("发送登录欢迎表情失败: %s", exc)
 
     def _check_idle_sleep(self) -> None:
         if self.state == SessionState.IDLE and self.display:
@@ -370,6 +399,7 @@ class SessionManager:
             failures.append("logout")
         finally:
             self._opened_links.clear()
+            self._greeting_sent = False
             failures += self._clean_dir(self._cfg.inbox_dir)
             failures += self._clean_dir(self._cfg.work_dir)
             failures += self._clean_dir(self._trace_dir())

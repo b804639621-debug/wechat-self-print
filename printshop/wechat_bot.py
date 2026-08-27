@@ -87,6 +87,10 @@ class WeChatClient:
         await self._ensure_started()
         return await self._bot.get_latest_messages()
 
+    async def send_text(self, message: str) -> bool:
+        await self._ensure_started()
+        return await self._bot.send_text(message)
+
     async def download(self, msg_id: str) -> bytes:
         await self._ensure_started()
         with tempfile.TemporaryDirectory() as tmp_dir:
