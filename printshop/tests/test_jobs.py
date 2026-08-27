@@ -1,4 +1,6 @@
+import threading
 from pathlib import Path
+
 from printshop.jobs import JobStore, JobStatus
 
 
@@ -116,3 +118,23 @@ def test_persists_across_reopen(tmp_path: Path):
     assert s.archive_all() == 1
     s = JobStore(db)
     assert s.list_active() == []
+
+
+def test_can_use_jobstore_from_child_thread(tmp_path):
+    s = JobStore(tmp_path / "t.db")
+    jid = s.add("m1", "a.pdf", "inbox/a.pdf", "pdf", 100, 1)
+    s.mark_printed(jid)
+
+    errors = []
+
+    def run_queries():
+        try:
+            assert len(s.list_active()) == 0
+            assert len(s.list_recent_done()) == 1
+        except Exception as exc:
+            errors.append(exc)
+
+    t = threading.Thread(target=run_queries)
+    t.start()
+    t.join()
+    assert errors == []

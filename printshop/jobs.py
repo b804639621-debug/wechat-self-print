@@ -72,7 +72,10 @@ class JobStore:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.db_path))
+        # GUI 模式下，连接在主线程创建，由 uvicorn 事件循环线程使用；
+        # SQLite 连接访问在应用层集中在单事件循环线程，序列化访问，
+        # 因此可安全跨线程使用（Python sqlite3 官方允许的方式）。
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
         self.on_job_added = None
