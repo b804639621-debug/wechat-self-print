@@ -16,6 +16,7 @@
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_heap_caps.h>
+#include <esp_log.h>
 
 #include "display.h"
 #include "fonts.h"
@@ -170,6 +171,25 @@ void lcd_panel_power_on(void) {
 
   /* 亮度必须随上电重设：ALDO3 断电后亮度寄存器丢失，不能只设在 lcd_init（spike 已搬入） */
   lcd_set_backlight(LCD_BACKLIGHT_PCT);
+}
+
+/* WiFi 亮屏失败时的一次性安全恢复：与 lcd_panel_power_on 相同 ALDO3 电源时序，
+ * 但 esp_lcd_panel_init 失败不 abort，由调用方决定后续处理。 */
+bool lcd_panel_power_on_checked(void) {
+  /* 屏复位：PMU ALDO3 掉电重上电（必须 PMU 已初始化） */
+  Axp2101_SetAldo3(1); vTaskDelay(pdMS_TO_TICKS(100));
+  Axp2101_SetAldo3(0); vTaskDelay(pdMS_TO_TICKS(100));
+  Axp2101_SetAldo3(1); vTaskDelay(pdMS_TO_TICKS(100));
+
+  esp_err_t err = esp_lcd_panel_init(panel);   /* 重发初始化序列，失败不 abort */
+  if (err != ESP_OK) {
+    ESP_LOGW("display", "lcd_panel_power_on_checked: panel init failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  /* 亮度必须随上电重设：ALDO3 断电后亮度寄存器丢失 */
+  lcd_set_backlight(LCD_BACKLIGHT_PCT);
+  return true;
 }
 
 void lcd_panel_power_off(void) {
@@ -378,11 +398,19 @@ void lcd_draw_text_center_scaled(int y, const char* s, int scale,
   lcd_draw_text_scaled(x, y, s, scale, fg, bg);
 }
 
-void lcd_screen_off(void) {
+bool lcd_screen_off(void) {
   lcd_clear(LCD_COLOR_BLACK);                 /* AMOLED 黑像素不发光，物理等效息屏 */
-  esp_lcd_panel_disp_on_off(panel, false);    /* 更彻底的 displayOff 命令 */
+  esp_err_t err = esp_lcd_panel_disp_on_off(panel, false);  /* 更彻底的 displayOff 命令 */
+  if (err != ESP_OK) {
+    ESP_LOGW("display", "lcd_screen_off: disp_on_off failed: %s", esp_err_to_name(err));
+  }
+  return err == ESP_OK;
 }
 
-void lcd_screen_on(void) {
-  esp_lcd_panel_disp_on_off(panel, true);
+bool lcd_screen_on(void) {
+  esp_err_t err = esp_lcd_panel_disp_on_off(panel, true);
+  if (err != ESP_OK) {
+    ESP_LOGW("display", "lcd_screen_on: disp_on_off failed: %s", esp_err_to_name(err));
+  }
+  return err == ESP_OK;
 }

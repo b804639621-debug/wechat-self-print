@@ -199,12 +199,16 @@ void showMaintenance(const char* s) {
 #define POLL_BACKOFF_MS  5000                /* 主控不可达退避重试间隔 */
 #define HTTP_TIMEOUT_MS  2500                /* HTTP 连接/读取超时 */
 #define IDLE_SLEEP_MS    (360UL * 1000)      /* 烧屏防护 本地兜底：6 分钟（主控 3 分钟先熄） */
+#define FORCE_OFF_RETRY_MS (60UL * 1000)      /* 熄屏状态下的周期性强制补刀（兜底状态脱同步） */
+#define PANEL_REINIT_RETRY_MS (30UL * 1000)   /* 亮屏失败后面板重初始化退避 */
 
 /* ---- 全局状态（WiFi 专用） ---- */
 bool everConnected = false;    /* 是否曾成功拉到主控状态 */
 int  failCount = 0;            /* 连续失败次数（驱动退避） */
 unsigned long lastPoll = 0;
 unsigned long lastStateChange = 0;  /* 状态/亮屏时间（本地熄屏兜底计时） */
+unsigned long lastForceOff = 0;      /* 上次熄屏/强制补刀时间（熄屏状态脱同步兜底） */
+unsigned long lastPanelReinit = 0;   /* 上次亮屏失败后面板重初始化时间（退避防反复电源循环） */
 
 void initDisplay(void) {
   lcd_init(I2cMasterBus_);     /* SH8601 显示 + 背光 60%（lcd_init 内部转调 lcd_panel_power_on） */
@@ -298,18 +302,49 @@ void onServerDown(void) {
 /* ---- 亮/熄屏 ---- */
 
 void doScreenOff(void) {
-  if (!screenOn) return;
-  screenOn = false;
-  /* USB 常态供电：只软熄屏（DISPOFF），不切断面板电源（勿改成 ALDO3 断电）。 */
-  lcd_screen_off();
-  Serial.println("[lcd] screen off");
+  unsigned long now = millis();
+  if (screenOn) {
+    screenOn = false;
+    /* USB 常态供电：只软熄屏（DISPOFF），不切断面板电源（勿改成 ALDO3 断电）。 */
+    bool ok = lcd_screen_off();
+    Serial.println(ok ? "[lcd] screen off ok" : "[lcd] screen off fail");
+    lastForceOff = now;
+    return;
+  }
+
+  /* 固件以为已熄而面板实际还亮：按 FORCE_OFF_RETRY_MS 周期补一次 DISPOFF+黑屏，
+   * 避免主控 display=off 后因偶发状态脱同步导致屏幕长期亮着。 */
+  if (now - lastForceOff < FORCE_OFF_RETRY_MS) return;
+  lastForceOff = now;
+  bool ok = lcd_screen_off();
+  Serial.println(ok ? "[lcd] forced off retry ok" : "[lcd] forced off retry fail");
 }
 
 void doScreenOn(void) {
   if (screenOn) return;
-  screenOn = true;
-  lcd_screen_on();
-  Serial.println("[lcd] screen on");
+
+  bool ok = lcd_screen_on();
+  if (ok) {
+    screenOn = true;
+    Serial.println("[lcd] screen on ok");
+    return;
+  }
+
+  Serial.println("[lcd] screen on fail");
+  unsigned long now = millis();
+  if (now - lastPanelReinit < PANEL_REINIT_RETRY_MS) return;
+  lastPanelReinit = now;
+
+  if (lcd_panel_power_on_checked()) {
+    if (lcd_screen_on()) {
+      screenOn = true;
+      Serial.println("[lcd] screen on ok");
+    } else {
+      Serial.println("[lcd] panel re-init fail");
+    }
+  } else {
+    Serial.println("[lcd] panel re-init fail");
+  }
 }
 
 /* ---- 初始化与主循环 ---- */

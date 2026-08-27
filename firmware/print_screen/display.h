@@ -36,6 +36,7 @@ void lcd_init(I2cMasterBus& i2cbus);
  * 初始化序列；SPI 总线/panel 句柄/DMA 缓冲只在 lcd_init 创建一次，本函数可重入调用。
  * 空闲态面板彻底断电（ALDO3 off）是 BLE 低功耗的前提。 */
 void lcd_panel_power_on(void);   /* ALDO3 上电复位 + 重发面板初始化序列 + 亮度 60% */
+bool lcd_panel_power_on_checked(void); /* WiFi 亮屏失败时的一次性安全恢复：同上电复位+初始化，失败只告警、不重启 */
 void lcd_panel_power_off(void);  /* DISPOFF + ALDO3 断电（空闲态） */
 
 /* 背光 0..100（SH8601 0x51 命令，无独立背光 GPIO） */
@@ -73,10 +74,12 @@ void lcd_draw_text_scaled(int x, int y, const char* s, int scale,
 void lcd_draw_text_center_scaled(int y, const char* s, int scale,
                                  uint16_t fg, uint16_t bg);
 
-/* 息屏：全黑填充 + DISPOFF（AMOLED 黑像素不发光，物理等效息屏） */
-void lcd_screen_off(void);
+/* 息屏：全黑填充 + DISPOFF（AMOLED 黑像素不发光，物理等效息屏）
+ * 失败只告警、不重启；调用方决定是否恢复。 */
+bool lcd_screen_off(void);
 
-/* 恢复显示（DISPOFF 之前写入的内容会直接显示） */
-void lcd_screen_on(void);
+/* 恢复显示（DISPOFF 之前写入的内容会直接显示）
+ * 失败只告警、不重启；调用方决定是否恢复。 */
+bool lcd_screen_on(void);
 
 #endif // DISPLAY_H
