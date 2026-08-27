@@ -345,7 +345,81 @@ async def test_default_factory_prewires_raw_callbacks_before_subscribe(monkeypat
     assert got[3].__func__ is link._on_link_raw.__func__
 
 
-# ---- AppContext 接线 -----------------------------------------------------------------
+# ---- --ble-selftest CLI 模式（Task 10B） -------------------------------------------
+
+
+async def _selftest_factory(made, battery_delay=0.05):
+    """selftest 用工厂：建连后模拟固件订阅 CCCD 补发电池首包的时序。"""
+    async def factory(addr):
+        conn = FakeConnector()
+        made.append(conn)
+        if battery_delay is not None:
+            async def _send_first_report():
+                await asyncio.sleep(battery_delay)
+                conn.trigger_battery({"pct": 61, "mv": 3880, "chg": 1, "vbus": 0})
+            asyncio.get_running_loop().create_task(_send_first_report())
+        return conn
+    return factory
+
+
+@pytest.mark.asyncio
+async def test_run_ble_selftest_success(monkeypatch):
+    """成功路径：建连+写屏 → 电池首包到达 → 读 link_status → off 息屏 → 返回 0。"""
+    import printshop.ble_link as bl
+    monkeypatch.setattr(bl, "_SELFTEST_OFF_GRACE", 0.1)
+    made = []
+    rc = await bl.run_ble_selftest(_cfg(),
+                                   connector_factory=await _selftest_factory(made))
+    assert rc == 0
+    conn = made[0]
+    assert json.loads(conn.writes[0])["message"] == "BLE selftest"  # display=on 占位
+    assert conn.reads >= 1                                          # selftest_read_link
+    assert await _wait_until(  # off 已消费写屏（worker 消费可能晚于 stop 前轮询）
+        lambda: conn.writes and json.loads(conn.writes[-1])["display"] == "off")
+    assert conn.closed is True   # stop 断开
+
+
+@pytest.mark.asyncio
+async def test_run_ble_selftest_battery_timeout_returns_1(monkeypatch):
+    """失败路径：电池首包超时 → 返回 1，连接句柄被 stop 清理。"""
+    import printshop.ble_link as bl
+    monkeypatch.setattr(bl, "_SELFTEST_BATTERY_TIMEOUT", 0.2)
+    made = []
+
+    async def factory(addr):  # 建连成功但永不触发电池
+        conn = FakeConnector()
+        made.append(conn)
+        return conn
+
+    rc = await bl.run_ble_selftest(_cfg(), connector_factory=factory)
+    assert rc == 1
+    assert made[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_run_ble_selftest_recovers_after_first_connect_failure(monkeypatch):
+    """首连失败（僵尸连接场景）→ 退避自动重试成功 → 返回 0（不误报 FAIL）。"""
+    import printshop.ble_link as bl
+    monkeypatch.setattr(bl, "_CONNECT_BACKOFF", 0.1)
+    monkeypatch.setattr(bl, "_SELFTEST_OFF_GRACE", 0.1)
+    made = []
+    attempts = []
+
+    async def factory(addr):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("fake 首连失败（模拟僵尸连接干扰）")
+        conn = FakeConnector()
+        made.append(conn)
+        async def _send_first_report():
+            await asyncio.sleep(0.05)
+            conn.trigger_battery({"pct": 61, "mv": 3880, "chg": 1, "vbus": 0})
+        asyncio.get_running_loop().create_task(_send_first_report())
+        return conn
+
+    rc = await bl.run_ble_selftest(_cfg(), connector_factory=factory)
+    assert rc == 0
+    assert len(attempts) >= 2
 
 
 def _ctx(ble):

@@ -105,6 +105,7 @@
 - 启动：WiFiManager 配网（首次开机自启热点，手机连上填店内 WiFi 密码存 Flash）→ 连接主控局域网地址
 - 主循环：每 1.5 秒 `GET /api/screen/state` → `{ state, display, qr_content, file_count, message }`
 - 传输通道（2026-08-25 Task 10B 起）：编译期二选一——TRANSPORT_BLE（现役：BLE 广播 + GATT 收发，空闲面板 ALDO3 彻底断电、WiFi 关闭，唤醒=主控连接后写 screen_state）/ TRANSPORT_WIFI（回滚：上述 WiFiManager 配网 + 1.5s 轮询路径）；GATT 契约与延迟实测见实施计划 Task 10B
+- 主控侧 BLE 推送模型（2026-08-26 同步，Task 10B S2/S4 落地）：**懒建连**——首次 display=on 推送才建连，display=off 未连接时纯丢弃；服务结束后 **120s 快速重醒窗口（主控计时）**，窗口内保持连接免建连、到期主动断开回广播；空闲期 **15min 周期连接**读 link_status + 电池首包，兼作小屏在线心跳（管理页电池置灰阈值 `stale_after` = 心跳间隔 + 300s，后端下发）；诊断入口 **`--ble-selftest`**（建连就绪 → 等电池首包 → 读 link_status → 亮占位屏 → 息屏，PASS/FAIL 退出码）
 - 二维码显示：主控用 pyzbar 解码二维码 PNG 得到**内容字符串**下发，固件用 `ricmoo/QRCode` 库**本地重新生成位图**（传输 <100 字节、显示锐利，不传 PNG 不解码）；显示驱动以微雪官方 Gitee 例程仓（waveshare/ESP32-C6-Touch-AMOLED-2.16）的 CO5300 驱动为准
 - 息屏：全黑填充（AMOLED 黑像素不发光，物理等效息屏；若驱动支持 displayOff 命令则更彻底）
 - ~~触摸唤醒（可选增强）~~：2026-08-25 决策放弃——唤醒仅保留管理员点击系统托盘图标；Task 10B BLE 通道不再初始化 CST9220，现役 WiFi 固件同步去除（commit 940f52b）

@@ -41,6 +41,13 @@ _CHR_LINK = "6e410003-3f2b-4f5c-9a01-9d6a3b21c001"
 _BATTERY_NOTIFY_WAIT = 3.0
 # 建连失败后的退避窗口（秒）：窗口内不再重复尝试建连（时间戳闸）
 _CONNECT_BACKOFF = 5.0
+# --ble-selftest 等电池首包的窗口（建连 ~2s + 写屏 + 固件补发，8s 余量充足）
+_SELFTEST_BATTERY_TIMEOUT = 8.0
+# --ble-selftest 等己方连接就绪的窗口：须盖过"首次建连失败 + 5s 退避 + 重试建连"
+# （强杀旧进程后的僵尸连接场景：残留连接可干扰首连，自动重试应被等到）
+_SELFTEST_CONNECT_TIMEOUT = 12.0
+# --ble-selftest 推 display=off 后等 worker 消费写屏的余量（单次 GATT 写远小于此）
+_SELFTEST_OFF_GRACE = 1.0
 
 
 def _in_test_env() -> bool:
@@ -495,3 +502,81 @@ class BleScreenLink:
                     conn.close()
                 except Exception:
                     _log.exception("BLE 心跳连接关闭失败")
+
+    # ---- 自检辅助 -----------------------------------------------------------------
+
+    @property
+    def connected(self) -> bool:
+        """己方连接句柄是否就绪（selftest 用；僵尸连接的转发包不算数）。"""
+        return self._conn is not None
+
+    async def selftest_read_link(self) -> dict | None:
+        """自检用公开读 API（主链路 read 仅走内部心跳，无需对外）：确保已连接
+        后读一次 link_status；不可用抛异常，由 run_ble_selftest 兜住。"""
+        conn = await self._ensure_connected()
+        if conn is None:
+            raise RuntimeError("BLE 未连接（建连失败或退避中）")
+        return await conn.read_link_status()
+
+
+async def run_ble_selftest(cfg, connector_factory=None) -> int:
+    """--ble-selftest CLI 模式：真实连接小屏，验证建连/写屏/订阅/notify 全链路。
+
+    流程：打印目标 → push display=on（占位画面）→ 先等**己方连接就绪**
+    （_SELFTEST_CONNECT_TIMEOUT；必须先等连接——强杀旧进程后的僵尸连接会把
+    残留订阅的电池包转发给新进程，"收到电池"不能当己方建连证据，2026-08-26
+    实机踩坑）→ 再等电池首包（_SELFTEST_BATTERY_TIMEOUT）→ 读 link_status
+    打印 → push display=off（息屏）→ stop → 打印 PASS 返回 0。任一步失败/超时
+    打印 FAIL 返回 1，全程 try/except 不向顶层抛栈（退出码即结果）；
+    connector_factory 仅测试注入。
+    """
+    print(f"BLE SELFTEST target={cfg.screen_ble_address!r} name={cfg.screen_ble_name!r}")
+    if not cfg.screen_ble_address:
+        print("BLE SELFTEST FAIL: screen_ble_address 为空（BLE 已禁用）")
+        return 1
+
+    battery_evt = asyncio.Event()
+    battery: dict = {}
+
+    def on_battery(report: dict) -> None:
+        battery.update(report)
+        battery_evt.set()
+
+    link = BleScreenLink(cfg, on_battery=on_battery,
+                         connector_factory=connector_factory)
+    try:
+        link.start()
+        link.push_state({"state": "IDLE", "display": "on", "qr_content": "",
+                         "file_count": 0, "message": "BLE selftest"})
+        # 第一关口：己方连接就绪（覆盖建连失败→退避→自动重试全程）
+        loop = asyncio.get_running_loop()
+        connect_deadline = loop.time() + _SELFTEST_CONNECT_TIMEOUT
+        while not link.connected and loop.time() < connect_deadline:
+            await asyncio.sleep(0.2)
+        if not link.connected:
+            print(f"BLE SELFTEST FAIL: {_SELFTEST_CONNECT_TIMEOUT}s 内未能建连"
+                  "（含退避重试）")
+            return 1
+        # 第二关口：电池首包 = 写屏 + CCCD 订阅 + notify 回调全通的证据
+        await asyncio.wait_for(battery_evt.wait(), _SELFTEST_BATTERY_TIMEOUT)
+        print(f"BLE SELFTEST battery={battery}")
+        status = await link.selftest_read_link()
+        print(f"BLE SELFTEST link_status={status}")
+        # 息屏：push 后等 worker 消费写屏再 stop（写入后连接保持，1s 余量足够）
+        link.push_state({"state": "IDLE", "display": "off", "qr_content": "",
+                         "file_count": 0, "message": ""})
+        await asyncio.sleep(_SELFTEST_OFF_GRACE)
+        print("BLE SELFTEST PASS")
+        return 0
+    except asyncio.TimeoutError:
+        print("BLE SELFTEST FAIL: 等待电池首包超时（订阅/notify 未通）")
+        return 1
+    except Exception as exc:
+        print(f"BLE SELFTEST FAIL: {exc}")
+        _log.debug("BLE selftest 失败详情", exc_info=True)
+        return 1
+    finally:
+        try:
+            await link.stop()
+        except Exception:
+            _log.exception("BLE selftest stop 失败")

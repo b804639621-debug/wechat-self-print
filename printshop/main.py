@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from printshop.ble_link import BleScreenLink
+from printshop.ble_link import BleScreenLink, run_ble_selftest
 from printshop.config import Config
 from printshop.jobs import JobStore
 from printshop.routes import AppContext, _is_loopback_host, build_router
@@ -143,6 +143,9 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
 def main() -> None:
     if getattr(sys, "frozen", False):
         os.chdir(Path(sys.executable).resolve().parent)
+    if "--ble-selftest" in sys.argv:
+        # BLE 自检模式：不起服务/托盘、不碰微信，直接跑真实小屏链路后退出
+        sys.exit(asyncio.run(run_ble_selftest(Config())))
     cfg = Config()
     app = create_app(cfg)
     ctx = app.state.ctx

@@ -10,9 +10,15 @@
   冻结态 chdir 到 exe 同级目录，保证不落 _MEI 临时目录。
 - hiddenimports：uvicorn（uvloop/httptools/websockets 等被 hook 覆盖）、
   pystray 的 win32 后端与 pywin32 的 win32print/win32com 显式声明以防漏。
+- BLE（Task 10B）：winrt 是命名空间包（顶层无 __init__.py），各业务子模块的
+  __init__.py 里 import winrt._winrt_*.pyd（均在 winrt/ 根下）。模块图经
+  hiddenimports 显式列出的 9 个业务模块可把相应 .pyd 作为 extension 收集；
+  msvcp140.dll（runtime 的 VC 依赖）用 collect_dynamic_libs("winrt") 兜底。
 """
 
 from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_dynamic_libs
 
 proj = Path(SPECPATH)
 ps1 = proj / "printshop" / "submit_xps.ps1"
@@ -39,12 +45,25 @@ hiddenimports = [
     "pystray._util.win32",
     "uvicorn",
     "websockets",
+    # winrt BLE Central 链路（ble_link.py 延迟 import，显式声明防漏收集）
+    "winrt.runtime",
+    "winrt.system",
+    "winrt.windows.foundation",
+    "winrt.windows.foundation.collections",
+    "winrt.windows.devices.bluetooth",
+    "winrt.windows.devices.bluetooth.advertisement",
+    "winrt.windows.devices.bluetooth.genericattributeprofile",
+    "winrt.windows.devices.enumeration",
+    "winrt.windows.devices.radios",
+    "winrt.windows.storage.streams",
 ]
+
+binaries = collect_dynamic_libs("winrt")  # msvcp140.dll（_winrt.pyd 的 VC 运行库）
 
 a = Analysis(
     [str(proj / "printshop" / "main.py")],
     pathex=[str(proj)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
