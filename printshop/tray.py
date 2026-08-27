@@ -37,10 +37,12 @@ def _icon(color: str) -> Image.Image:
 
 
 class TrayApp:
-    def __init__(self, base_url: str, get_state: Callable[[], str], server=None):
+    def __init__(self, base_url: str, get_state: Callable[[], str], server=None,
+                 admin_opener: Callable[[], None] | None = None):
         self._base = base_url.rstrip("/")
         self._get_state = get_state
         self._server = server
+        self._admin_opener = admin_opener
         self._stop = threading.Event()
         self.icon = pystray.Icon(
             "printshop",
@@ -66,10 +68,14 @@ class TrayApp:
                 client.post(f"{self._base}/api/screen/wake", timeout=5)
         except Exception:
             pass  # 主控未就绪等：静默容错，托盘不得崩溃
+        self.open_admin()  # 点亮后同步打开后台；POST 异常也继续打开
 
     def open_admin(self, *_args) -> None:
         try:
-            os.startfile(f"{self._base}/admin")
+            if self._admin_opener is not None:
+                self._admin_opener()
+            else:
+                os.startfile(f"{self._base}/admin")
         except Exception:
             pass
 
@@ -109,7 +115,9 @@ class TrayApp:
         return t
 
 
-def start_tray(base_url: str, get_state: Callable[[], str], server=None) -> TrayApp:
-    tray = TrayApp(base_url=base_url, get_state=get_state, server=server)
+def start_tray(base_url: str, get_state: Callable[[], str], server=None,
+               admin_opener: Callable[[], None] | None = None) -> TrayApp:
+    tray = TrayApp(base_url=base_url, get_state=get_state, server=server,
+                   admin_opener=admin_opener)
     tray.run_thread()
     return tray

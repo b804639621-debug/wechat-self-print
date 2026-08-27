@@ -37,10 +37,11 @@ class _FakeIcon:
 @pytest.fixture
 def tray_factory():
     def make(base="http://127.0.0.1:8000", get_state=lambda: SessionState.IDLE,
-             server=None):
+             server=None, admin_opener=None):
         with patch("printshop.tray.pystray.Icon", return_value=_FakeIcon()):
             from printshop.tray import TrayApp
-            return TrayApp(base_url=base, get_state=get_state, server=server)
+            return TrayApp(base_url=base, get_state=get_state, server=server,
+                           admin_opener=admin_opener)
     return make
 
 
@@ -121,7 +122,8 @@ def test_wake_is_non_blocking_and_spawns_worker(tray_factory):
 
 
 def test_wake_worker_swallows_error_and_skips_proxy(tray_factory):
-    tray = tray_factory()
+    opened = []
+    tray = tray_factory(admin_opener=lambda: opened.append("opened"))
     client = MagicMock()
     client.__enter__.return_value = client
     client.post.side_effect = httpx.ConnectError("proxy hole")
@@ -130,6 +132,28 @@ def test_wake_worker_swallows_error_and_skips_proxy(tray_factory):
     cls.assert_called_once_with(trust_env=False)
     client.post.assert_called_once_with(
         "http://127.0.0.1:8000/api/screen/wake", timeout=5)
+    assert opened == ["opened"]
+
+
+def test_wake_worker_opens_admin_after_successful_post(tray_factory):
+    opened = []
+    tray = tray_factory(admin_opener=lambda: opened.append("opened"))
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.post.return_value = MagicMock()
+    with patch("printshop.tray.httpx.Client", return_value=client) as cls:
+        tray._wake_worker()
+    cls.assert_called_once_with(trust_env=False)
+    client.post.assert_called_once_with(
+        "http://127.0.0.1:8000/api/screen/wake", timeout=5)
+    assert opened == ["opened"]
+
+
+def test_open_admin_uses_os_startfile_when_no_opener(tray_factory):
+    tray = tray_factory()
+    with patch("printshop.tray.os.startfile") as startfile:
+        tray.open_admin()
+    startfile.assert_called_once_with("http://127.0.0.1:8000/admin")
 
 
 def test_quit_sets_server_should_exit_and_stops_icon(tray_factory):
