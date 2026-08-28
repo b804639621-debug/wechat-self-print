@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from printshop.battery_track import (
+    _recent_discharge_samples,
     _same_minute,
     append_history,
     estimate_runtime,
@@ -69,6 +70,20 @@ def test_estimate_runtime_uses_only_discharge_samples():
     assert n == 3
     # 只用 18:30/19:00/19:30 三个放电点：掉 20%/h，最近 70% -> 3.5h
     assert hours == pytest.approx(3.5, abs=0.1)
+
+
+def test_recent_discharge_samples_resets_after_charge():
+    samples = [
+        _sample("2026-08-27 18:00:00", 100),
+        _sample("2026-08-27 18:30:00", 90),
+        _sample("2026-08-27 19:00:00", 100, vbus="true", charging="true"),
+        _sample("2026-08-27 20:00:00", 95),
+        _sample("2026-08-27 20:30:00", 90),
+    ]
+    recent = _recent_discharge_samples(samples)
+    assert len(recent) == 2
+    assert recent[0]["timestamp"] == "2026-08-27 20:00:00"
+    assert recent[1]["timestamp"] == "2026-08-27 20:30:00"
 
 
 def test_same_minute():

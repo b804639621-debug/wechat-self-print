@@ -109,6 +109,20 @@ def append_history(
     return True
 
 
+def _recent_discharge_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """只保留当前连续放电会话的样本：遇到充电/USB 样本就重置。
+
+    避免上次电池放电的历史污染本次续航估算。
+    """
+    recent: list[dict[str, Any]] = []
+    for s in samples:
+        if _is_discharge(s):
+            recent.append(s)
+        else:
+            recent = []
+    return recent
+
+
 def estimate_runtime(
     samples: list[dict[str, Any]],
     min_span_minutes: int = 10,
@@ -246,6 +260,8 @@ def main(argv: list[str] | None = None) -> int:
         # 历史里已有该点，不再重复加入估算集。
         if _should_append(history, current_row):
             estimate_samples.append(current_sample)
+        # 只取当前连续放电会话，避免上次电池放电样本污染本次估算。
+        estimate_samples = _recent_discharge_samples(estimate_samples)
         estimate, valid_samples = estimate_runtime(
             estimate_samples,
             min_span_minutes=args.min_span_minutes,

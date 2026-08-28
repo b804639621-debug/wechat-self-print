@@ -1,4 +1,4 @@
-# 安装/卸载 自助打印电量监控计划任务。
+﻿# 安装/卸载 自助打印电量监控计划任务。
 #
 # 用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File install_battery_monitor.ps1
