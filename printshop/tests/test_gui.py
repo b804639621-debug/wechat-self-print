@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from printshop.gui import QUIT, SHOW, GuiController
+from printshop.gui import GuiController
 
 
 class _ClosingEvent:
@@ -14,26 +14,25 @@ class _ClosingEvent:
         return self
 
 
+class _ShownEvent:
+    def wait(self, timeout):
+        return True
+
+
 class _FakeEvents:
     def __init__(self):
         self.closing = _ClosingEvent()
-
-
-def test_show_and_quit_are_enqueued():
-    gui = GuiController("http://127.0.0.1:8000/admin")
-    assert gui._queue.empty()
-
-    gui.show()
-    assert gui._queue.get_nowait() == SHOW
-
-    gui.quit()
-    assert gui._queue.get_nowait() == QUIT
+        self.shown = _ShownEvent()
 
 
 def test_start_blocking_creates_window_and_starts_edgechromium():
     gui = GuiController("http://127.0.0.1:8000/admin")
     fake_window = MagicMock()
+    fake_window.uid = "win-1"
     fake_window.events = _FakeEvents()
+    fake_form = MagicMock()
+    fake_form.Handle.ToInt64.return_value = 456
+    fake_window.gui.BrowserView.instances = {"win-1": fake_form}
     captured = {}
 
     def fake_start(func, args, gui=None):
@@ -44,6 +43,8 @@ def test_start_blocking_creates_window_and_starts_edgechromium():
     with patch("printshop.gui.webview.create_window", return_value=fake_window) as create:
         with patch("printshop.gui.webview.start", side_effect=fake_start) as start:
             gui.start_blocking()
+            # 模拟 pywebview 启动后在线程中执行初始化回调。
+            captured["func"]()
 
     create.assert_called_once_with(
         "打印管理后台",
@@ -53,8 +54,9 @@ def test_start_blocking_creates_window_and_starts_edgechromium():
         min_size=(960, 640),
     )
     assert fake_window.events.closing.handlers == [gui._on_closing]
-    start.assert_called_once_with(gui._command_worker, (gui._queue,), gui="edgechromium")
+    start.assert_called_once_with(gui._init_window, (), gui="edgechromium")
     assert gui._window is fake_window
+    assert gui._hwnd == 456
 
 
 def test_on_closing_hides_by_default_and_allows_after_quit():
@@ -71,31 +73,49 @@ def test_on_closing_hides_by_default_and_allows_after_quit():
     fake_window.hide.assert_not_called()
 
 
-def test_command_worker_processes_show_then_quit():
+def test_show_uses_win32_apis():
     gui = GuiController("http://127.0.0.1:8000/admin")
-    fake_window = MagicMock()
-    fake_window.events.closed.is_set.return_value = False
-    gui._window = fake_window
-    gui._queue.put(SHOW)
-    gui._queue.put(QUIT)
+    gui._hwnd = 123
 
-    gui._command_worker(gui._queue)
+    with patch("printshop.gui.ctypes.windll", create=True) as windll:
+        gui.show()
 
-    fake_window.restore.assert_called_once_with()
-    fake_window.show.assert_called_once_with()
-    fake_window.destroy.assert_called_once_with()
+    windll.user32.ShowWindow.assert_any_call(123, 9)
+    windll.user32.ShowWindow.assert_any_call(123, 5)
+    windll.user32.SetForegroundWindow.assert_called_once_with(123)
+
+
+def test_show_without_hwnd_does_not_call_win32():
+    gui = GuiController("http://127.0.0.1:8000/admin")
+    gui._window = None
+
+    with patch("printshop.gui.ctypes.windll", create=True) as windll:
+        gui.show()
+
+    windll.user32.ShowWindow.assert_not_called()
+    windll.user32.SetForegroundWindow.assert_not_called()
+
+
+def test_quit_posts_wm_close():
+    gui = GuiController("http://127.0.0.1:8000/admin")
+    gui._hwnd = 123
+
+    with patch("printshop.gui.ctypes.windll", create=True) as windll:
+        gui.quit()
+
     assert gui._allow_close is True
+    windll.user32.PostMessageW.assert_called_once_with(123, 0x10, 0, 0)
 
 
-def test_command_worker_exits_when_finished_and_queue_idle():
+def test_quit_without_hwnd_does_not_post_message():
     gui = GuiController("http://127.0.0.1:8000/admin")
-    fake_window = MagicMock()
-    gui._window = fake_window
-    gui._finished.set()
+    gui._window = None
 
-    gui._command_worker(gui._queue)
+    with patch("printshop.gui.ctypes.windll", create=True) as windll:
+        gui.quit()
 
-    assert gui._allow_close is False
+    assert gui._allow_close is True
+    windll.user32.PostMessageW.assert_not_called()
 
 
 def test_start_blocking_shows_error_and_reraises_on_webview_start_failure():
