@@ -46,3 +46,7 @@
 ## 5. 回退速查
 
 同 stage1 交接 §5；本机另存 20dBm 基线构建 `C:\arduino-build\print_screen_baseline`（源码副本 `C:\arduino-build\baseline_src\print_screen`）可供再次对比。
+
+## 6. 后续变更记录
+
+- **2026-09-16 维护画面限时熄屏**（commit `cc9b62f`）：主控关机/退出后"系统维护中"原常亮至断电（AMOLED 烧屏风险），改为 `MAINT_SCREEN_OFF_MS=180s` 限时显示后自动熄屏（60s 周期补刀），主控恢复即自动亮屏重绘。**e2e 验收 2026-09-16 通过**：停主控 → ~5s 亮维护画面 → 3 分钟自动熄屏 → 重启主控自动恢复。BLE 回切变体维护语义不变。
