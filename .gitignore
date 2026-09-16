@@ -36,3 +36,6 @@ img*.pdf
 
 # 电量监控历史（运行数据，不入库）
 battery_history.csv
+
+# 运行日志（RotatingFileHandler 滚动落盘，不入库）
+logs/
