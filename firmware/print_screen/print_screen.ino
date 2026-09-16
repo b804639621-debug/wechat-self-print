@@ -213,6 +213,8 @@ void showMaintenance(const char* s) {
 #define POLL_BACKOFF_MS  5000                /* 主控不可达退避重试间隔 */
 #define HTTP_TIMEOUT_MS  2500                /* HTTP 连接/读取超时 */
 #define IDLE_SLEEP_MS    (360UL * 1000)      /* 烧屏防护 本地兜底：6 分钟（主控 3 分钟先熄） */
+#define MAINT_SCREEN_OFF_MS (180UL * 1000)   /* 主控不可达时维护画面亮屏时长：3 分钟后熄屏防烧屏，
+                                              * 熄屏后仍按退避轮询，主控恢复自动亮屏重绘 */
 #define FORCE_OFF_RETRY_MS (60UL * 1000)      /* 熄屏状态下的周期性强制补刀（兜底状态脱同步） */
 #define PANEL_REINIT_RETRY_MS (30UL * 1000)   /* 亮屏失败后面板重初始化退避 */
 
@@ -241,6 +243,7 @@ bool everConnected = false;    /* 是否曾成功拉到主控状态 */
 int  failCount = 0;            /* 连续失败次数（驱动退避） */
 unsigned long lastPoll = 0;
 unsigned long lastStateChange = 0;  /* 状态/亮屏时间（本地熄屏兜底计时） */
+unsigned long serverDownSince = 0;  /* 本轮断连首败时间（维护画面超时熄屏计时，主控可达清零） */
 unsigned long lastForceOff = 0;      /* 上次熄屏/强制补刀时间（熄屏状态脱同步兜底） */
 unsigned long lastPanelReinit = 0;   /* 上次亮屏失败后面板重初始化时间（退避防反复电源循环） */
 
@@ -290,6 +293,7 @@ void pollScreen(void) {
   String qr = doc["qr_content"] | "";
 
   failCount = 0;
+  serverDownSince = 0;         /* 主控可达：清零断连计时，下次断连从首败重新计 */
   everConnected = true;
   maintLastText = "";   /* 主控可达即复位维护画面守卫：再宕机时 showMaintenance 必重绘，不留正常画面残影 */
 
@@ -336,13 +340,22 @@ void pollScreen(void) {
   }
 }
 
-/* 主控不可达：退避重试，不死机 */
+/* 主控不可达：退避重试，不死机。维护画面亮 MAINT_SCREEN_OFF_MS 后熄屏（烧屏防护：
+ * 主控关机/退出后白字不再常亮至断电）；熄屏后轮询照跑，主控恢复即自动亮屏重绘。 */
 void onServerDown(void) {
+  unsigned long now = millis();
   failCount++;
-  if (failCount == 1) Serial.println("[http] 主控不可达，退避重试...");
+  if (failCount == 1) {
+    Serial.println("[http] 主控不可达，退避重试...");
+    serverDownSince = now;     /* 每次断连从首败重新计时（failCount 仅主控可达时清零） */
+  }
   /* 清掉已绘状态，主控恢复后首次 pollScreen 强制重绘（否则 needRedraw 恒假，滞留维护画面） */
   qrShown = "";
   lastStatusKey = "";
+  if (now - serverDownSince >= MAINT_SCREEN_OFF_MS) {
+    doScreenOff();             /* 含 60s 周期强制补刀，防熄屏状态脱同步 */
+    return;
+  }
   doScreenOn();                /* 熄屏时也要亮屏提示“系统维护中”（黑底白字，防烧屏） */
   if (everConnected) {
     showMaintenance("系统维护中");
@@ -550,7 +563,8 @@ void loop(void) {
   }
 
   /* 烧屏防护 本地兜底：IDLE 且长时间无变化 → 熄屏（正常由主控 display=off 驱动）。
-   * 主控不可达（failCount>0）时让"系统维护中"常亮提示，不进入此分支。
+   * 主控不可达（failCount>0）时不进此分支：维护画面由 onServerDown 按
+   * MAINT_SCREEN_OFF_MS 限时亮屏后自动熄屏，不再常亮至断电。
    * 注意：必须用新鲜 millis()，不能用循环顶部的 now——pollScreen() 内 HTTP 耗时
    * 数百 ms，若期间刚亮屏更新了 lastStateChange，用旧 now 相减会无符号下溢成 ~2^32，
    * 导致每次轮询都误触发熄屏（on/off 每 1.5s 循环闪烁的根因）。 */
