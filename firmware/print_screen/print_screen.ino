@@ -6,8 +6,9 @@
  *   - SH8601 显示（esp_lcd）     ：显示驱动在 display.cpp，无 LVGL 直绘
  *   - CST9220 触摸：已停用（2026-08-25 决策：放弃触摸唤醒，不再初始化）
  * 传输通道（编译期二选一，见 transport_config.h）：
- *   - TRANSPORT_WIFI（默认，现役）：WiFiManager 配网 + 每 1.5s 轮询主控
- *     GET /api/screen/state（USB 常供电，不省电）。
+ *   - TRANSPORT_WIFI（默认，现役）：WiFiManager 配网 + HTTP 轮询主控
+ *     GET /api/screen/state（WiFi 省电改造后：modem sleep + 熄屏闲时 5s 轮询
+ *     + TX 11dBm 起测 + CPU 80MHz + iTWT 可选）。
  *   - TRANSPORT_BLE（可回切变体，Task 10B）：BLE 外设。空闲面板 ALDO3 彻底断电、
  *     WiFi 关闭、低占空比广播（100ms）；主控连接后写 screen_state 驱动亮屏/熄屏/
  *     状态画面，绘制完成 notify link_status 作 ack，电池连接期间 notify 上报。
@@ -34,10 +35,20 @@
 #include "./src/port_bsp/axp2101_bsp.h"
 
 #if defined(TRANSPORT_WIFI)
+#ifndef PM_LIGHT_SLEEP
+#define PM_LIGHT_SLEEP 1   /* 省电档A：自动 light sleep；可 -DPM_LIGHT_SLEEP=0 构建"不睡版"排障 */
+#endif
+
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
+#include <esp_wifi.h>      /* esp_wifi_set_protocol / esp_wifi_set_ps / phymode */
+#include <esp_wifi_he.h>   /* esp_wifi_sta_itwt_setup / wifi_itwt_setup_config_t（IDF≥5.2，core 3.3.x 应含） */
+#include <esp_event.h>     /* esp_event_handler_instance_register */
+#if PM_LIGHT_SLEEP
+#include <esp_pm.h>        /* esp_pm_configure（官方预编译库若未开 CONFIG_PM_ENABLE 仍可编译） */
+#endif
 #endif
 
 #if defined(TRANSPORT_BLE)
@@ -188,7 +199,7 @@ void showMaintenance(const char* s) {
   lcd_draw_text_center(TEXT_Y + jitter, s, LCD_COLOR_WHITE, LCD_COLOR_BLACK);
 }
 
-/* ==================== WiFi 通道（现役，USB 常供电不省电） ==================== */
+/* ==================== WiFi 通道（WiFi 省电改造后：modem sleep + 熄屏闲时 5s 轮询 + TX 11dBm 起测 + CPU 80MHz + iTWT 可选） ==================== */
 
 #if defined(TRANSPORT_WIFI)
 
@@ -196,11 +207,34 @@ void showMaintenance(const char* s) {
 #define SERVER_IP        "192.168.31.171"    /* 主控固定 IP（配网时按店内实际改） */
 #define SERVER_PORT      8000
 #define POLL_INTERVAL_MS 1500                /* 正常轮询间隔 */
+#define POLL_IDLE_INTERVAL_MS 5000           /* 熄屏闲时轮询间隔（省电档2）：
+                                              * PC 侧 screen_online_threshold_seconds 必须 > 2×此值；
+                                              * 改大此值需同步改 printshop/config.py 同名字段 */
 #define POLL_BACKOFF_MS  5000                /* 主控不可达退避重试间隔 */
 #define HTTP_TIMEOUT_MS  2500                /* HTTP 连接/读取超时 */
 #define IDLE_SLEEP_MS    (360UL * 1000)      /* 烧屏防护 本地兜底：6 分钟（主控 3 分钟先熄） */
 #define FORCE_OFF_RETRY_MS (60UL * 1000)      /* 熄屏状态下的周期性强制补刀（兜底状态脱同步） */
 #define PANEL_REINIT_RETRY_MS (30UL * 1000)   /* 亮屏失败后面板重初始化退避 */
+
+/* 省电档1 可选实验档 —— 默认注释，实测 MIN_MODEM 电流不达预期再开 */
+// #define WIFI_MAX_MODEM_SLEEP 1
+// #define WIFI_LISTEN_INTERVAL 2   /* 单位：beacon 周期(100ms) */
+
+/* ---- 省电档3：TX 功率（-dBm 枚举由 esp_wifi 提供；开机按 RSSI 起测选档） ---- */
+#define WIFI_TX_POWER_OK   WIFI_POWER_11dBm   /* RSSI ≥ WIFI_TX_RSSI_KEEP 时使用 */
+#define WIFI_TX_POWER_WEAK WIFI_POWER_17dBm   /* RSSI < WIFI_TX_RSSI_KEEP 时自动升档 */
+#define WIFI_TX_RSSI_KEEP  (-68)              /* 开机 RSSI 阈值（dBm） */
+
+/* ---- 省电档4：iTWT（实验；路由器需支持 802.11ax TWT，失败自动静默回退 DTIM） ----
+ * 唤醒间隔 = mant×2^expn µs：512<<12 = 2.097s —— 与闲时轮询 5s 对齐
+ * （SP 节拍快于轮询节奏，AP 下行缓冲≤2.1s；若实测 HTTP 响应被 SP 节拍拖延，
+ *  下调 expn 至 11(1.05s) 或关闭本档） */
+#define ITWT_ENABLE            1
+#define ITWT_WAKE_INVL_MANT    512
+#define ITWT_WAKE_INVL_EXPN    12
+#define ITWT_MIN_WAKE_DURA     255     /* 255×256µs ≈ 65ms SP */
+#define ITWT_WAKE_DURATION_UNIT 0      /* 0=256µs 粒度 */
+#define ITWT_SETUP_TIMEOUT_MS  2000    /* 协商阻塞上限，开机一次性 */
 
 /* ---- 全局状态（WiFi 专用） ---- */
 bool everConnected = false;    /* 是否曾成功拉到主控状态 */
@@ -223,6 +257,9 @@ void showTextOnBlack(const char* s) {
 /* ---- 轮询与状态机 ---- */
 
 void pollScreen(void) {
+#if defined(WIFI_DEBUG_PERF)
+  unsigned long perfT0 = millis();   /* 验证插桩（§1.4/§5.3）：默认编译不含 */
+#endif
   String url = "http://" + String(SERVER_IP) + ":" + String(SERVER_PORT) + "/api/screen/state";
   if (battValid) {   /* 捎带电池上报：主控存内存，管理页显示；无电池不追加（参数契约见 firmware/README §九） */
     char q[72];
@@ -235,6 +272,9 @@ void pollScreen(void) {
   http.setConnectTimeout(HTTP_TIMEOUT_MS);
   http.setTimeout(HTTP_TIMEOUT_MS);
   int code = http.GET();
+#if defined(WIFI_DEBUG_PERF)
+  Serial.printf("[perf] poll http=%lums code=%d\n", millis() - perfT0, code);
+#endif
   if (code != HTTP_CODE_OK) { http.end(); onServerDown(); return; }
   String payload = http.getString();
   http.end();
@@ -270,7 +310,13 @@ void pollScreen(void) {
      * 服务期间、完成服务即熄屏，静画停留时间短；少重绘也压缩了花屏暴露面） */
     bool needRedraw = wasOff || (qr != qrShown);
     if (needRedraw) {
+#if defined(WIFI_DEBUG_PERF)
+      unsigned long d0 = millis();
+#endif
       drawQR(qr, false);
+#if defined(WIFI_DEBUG_PERF)
+      Serial.printf("[perf] drawQR %lums\n", millis() - d0);
+#endif
       qrShown = qr;
     }
   } else {
@@ -279,7 +325,13 @@ void pollScreen(void) {
     if (key != lastStatusKey) {
       lastStatusKey = key;
       qrShown = "";
+#if defined(WIFI_DEBUG_PERF)
+      unsigned long d0 = millis();
+#endif
       showStatus(curState.c_str(), fc, qr);
+#if defined(WIFI_DEBUG_PERF)
+      Serial.printf("[perf] showStatus %lums\n", millis() - d0);
+#endif
     }
   }
 }
@@ -347,6 +399,59 @@ void doScreenOn(void) {
   }
 }
 
+/* ---- 省电档4：iTWT ---- */
+static bool itwtFlowReady(void) {
+  int bitmap = 0;
+  if (esp_wifi_sta_itwt_get_flow_id_status(&bitmap) == ESP_OK) return (bitmap & 0x01) != 0;
+  return false;
+}
+
+static void itwtTrySetup(void) {
+  if (!ITWT_ENABLE || itwtFlowReady()) return;
+  static unsigned long lastTry = 0;
+  unsigned long now = millis();
+  if (lastTry && (now - lastTry < 60000UL)) return;
+  lastTry = now;
+
+  wifi_phy_mode_t phy;
+  if (esp_wifi_sta_get_negotiated_phymode(&phy) != ESP_OK || phy != WIFI_PHY_MODE_HE20) {
+    Serial.println("[twt] AP 非 11ax(HE20)，跳过 iTWT（保持 DTIM）");
+    return;
+  }
+  wifi_itwt_setup_config_t cfg = {
+    .setup_cmd = TWT_REQUEST,
+    .trigger = 1,                          /* trigger-enabled（官方例程默认） */
+    .flow_type = 0,                        /* 0=announced（官方例程默认；实测响应延迟大再试 unannounced=1） */
+    .flow_id = 0,
+    .wake_invl_expn = ITWT_WAKE_INVL_EXPN,
+    .wake_duration_unit = ITWT_WAKE_DURATION_UNIT,
+    .min_wake_dura = ITWT_MIN_WAKE_DURA,
+    .wake_invl_mant = ITWT_WAKE_INVL_MANT,
+    .twt_id = 0,
+    .timeout_time_ms = ITWT_SETUP_TIMEOUT_MS,
+  };
+  esp_err_t e = esp_wifi_sta_itwt_setup(&cfg);
+  Serial.printf("[twt] setup ret=0x%x %s\n", e,
+                e == ESP_OK ? (itwtFlowReady() ? "flow ready" : "pending(见事件)" ) : "→ 静默回退 DTIM");
+}
+
+/* 事件日志：WIFI_EVENT_ITWT_SETUP/TEARDOWN/SUSPEND/PROBE 各打一行（详细字段见 IDF 例程 itwt_main.c） */
+static void onWifiEvent(void* arg, esp_event_base_t base, int32_t id, void* data) {
+  if (id == WIFI_EVENT_STA_CONNECTED) {
+    itwtTrySetup();           /* 重连后重建 iTWT；60s 守卫防风暴 */
+  } else if (id == WIFI_EVENT_ITWT_SETUP) {
+    wifi_event_sta_itwt_setup_t* s = (wifi_event_sta_itwt_setup_t*)data;
+    const char* what =
+        s->status == ESP_ERR_WIFI_TWT_SETUP_TIMEOUT ? "AP无响应" :
+        s->status == ESP_ERR_WIFI_TWT_SETUP_REJECT  ? "AP拒绝"  :
+        s->status == ESP_ERR_WIFI_TWT_SETUP_TXFAIL  ? "TX失败"  : "其它";
+    Serial.printf("[twt] setup event status=%d (%s/%s)\n", (int)s->status,
+                  s->status == ESP_OK ? "已建立" : "未建立→DTIM", what);
+  } else if (id == WIFI_EVENT_ITWT_TEARDOWN || id == WIFI_EVENT_ITWT_SUSPEND || id == WIFI_EVENT_ITWT_PROBE) {
+    Serial.printf("[twt] event id=%d\n", (int)id);
+  }
+}
+
 /* ---- 初始化与主循环 ---- */
 
 void setup(void) {
@@ -357,13 +462,66 @@ void setup(void) {
   initDisplay();               /* ② 显示（触摸 CST9220 已停用，不再初始化） */
 
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);        /* 保持 WiFi 活跃，轮询不抖动 */
+  /* 省电档1（modem sleep / DTIM）：曾因"轮询不抖动"刻意关（handoff-2026-08-27:86）。
+   * 本项目轮询为 STA→AP 上行主导（GET），下行仅小响应，DTIM 缓冲导致的
+   * 额外延迟 ≤ 数个 beacon(100ms 级)，对轮询节奏无感，故恢复睡眠；
+   * 若回归实测亮屏期抖动不可接受，可退化为"仅熄屏睡眠"（见计划 §1.5 回退 B）。 */
+#if defined(WIFI_MAX_MODEM_SLEEP)
+  esp_wifi_set_ps(WIFI_PS_MAX_MODEM);
+  esp_wifi_set_listen_interval(WIFI_LISTEN_INTERVAL);
+#else
+  WiFi.setSleep(true);         /* == esp_wifi_set_ps(WIFI_PS_MIN_MODEM)，Arduino 默认即听每个 DTIM */
+#endif
+
+#if ITWT_ENABLE
+  /* 省电档4前置：声明 STA 支持 11ax/HE20（C6 仅 HE20），是 iTWT 协商前提；
+   * 路由器无 AX 时自动回落 11n 连接，无副作用（WiFiManager 配网页走 softAP，不受影响） */
+  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G
+                                      | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_11AX);
+  esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
+  /* iTWT 事件 + 断线重连后重建；连接前注册，事件循环由 WiFi 库建好 */
+  esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_ITWT_SETUP,    onWifiEvent, NULL, NULL);
+  esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_ITWT_TEARDOWN, onWifiEvent, NULL, NULL);
+  esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_ITWT_SUSPEND,  onWifiEvent, NULL, NULL);
+  esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_ITWT_PROBE,    onWifiEvent, NULL, NULL);
+  esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_CONNECTED, onWifiEvent, NULL, NULL);
+#endif
+
   WiFiManager wm;
   wm.setConfigPortalTimeout(180);
   if (!wm.autoConnect("PRINT-SETUP")) {  /* 首次自建热点配网 */
     ESP.restart();             /* 配网超时重启重试 */
   }
   Serial.printf("[net] WiFi connected, IP=%s\n", WiFi.localIP().toString().c_str());
+
+  /* 降 TX 功率（省电档3）：店内距离近、链路余量大。RSSI 是下行测量，仅作链路对称性
+   * 代理指标；真正验收以 PC ping 丢包/HTTP 轮询成功率为准（见计划 §3.3）。
+   * 开机定档即可，运行中不动态调整；轮询连败由既有 failCount 退避兜底。 */
+  int rssi = WiFi.RSSI();
+  wifi_power_t txp = (rssi >= WIFI_TX_RSSI_KEEP) ? WIFI_TX_POWER_OK : WIFI_TX_POWER_WEAK;
+  if (WiFi.setTxPower(txp)) {
+    Serial.printf("[net] RSSI=%d dBm, TX power=%d\n", rssi, (int)txp);
+  } else {
+    Serial.printf("[net] TX power set fail (rssi=%d), keep default\n", rssi);
+  }
+
+  /* 省电档5：CPU 160→80MHz（RISC-V 单核，Arduino 仅支持 80/160 两档，勿写 240）。
+   * 电量计量/esp_timer/I2C(100k)/HTTP(无 TLS)均不依赖 160MHz；
+   * QSPI 刷屏 pclk 40MHz（display.cpp:131）由 SPI 时钟源提供，不受 CPU 主频直接决定，
+   * 但 80MHz 下绘制循环（点阵放大/文本合成，CPU 密集段）约慢 1 倍——
+   * 全屏重绘预期仍 <300ms，对 5s 级唤醒链路无感；实际影响由验证步骤量化。 */
+  setCpuFrequencyMhz(80);
+  Serial.printf("[cpu] freq=%u MHz\n", getCpuFrequencyMhz());
+
+#if PM_LIGHT_SLEEP
+  /* 方案 A2：自动 light sleep（当前官方预编译库 CONFIG_PM_ENABLE 未开时预期返回
+   * ESP_ERR_NOT_SUPPORTED，固件仍按现状跑；重编 libs 后自动生效，无需改源码）。 */
+  esp_pm_config_t pm = { .max_freq_mhz = 160, .min_freq_mhz = 80, .light_sleep_enable = true };
+  esp_err_t e = esp_pm_configure(&pm);
+  Serial.printf("[pm] esp_pm_configure %s\n", e == ESP_OK ? "OK" : esp_err_to_name(e));
+#endif
+
+  itwtTrySetup();   /* 一次协商 ≤2s；失败仅日志，静默回退 DTIM（档1） */
 
   screenOn = true;
   lastStateChange = millis();
@@ -375,7 +533,17 @@ void loop(void) {
   updateBatteryCache();        /* 电池缓存：60s 读一次 PMU（内部有间隔守卫） */
 
   unsigned long now = millis();
-  unsigned long interval = (failCount > 0) ? POLL_BACKOFF_MS : POLL_INTERVAL_MS;
+  /* 自适应轮询（省电档2）："闲" = 屏幕已熄（screenOn=false）。
+   * 判定依据解析：
+   *  - 亮屏即 display=on（服务中/等扫码引导），PC 端必然处于可能被扫码确认的窗口，
+   *    必须保持 1.5s 快轮询（扫码确认→画面反馈 ≤1.5s，与现状一致）；
+   *  - display=off 只在 IDLE+无事件 180s(PC) / 360s(本地兜底) 后出现，即"无会话且已熄屏"，
+   *    拉长到 5s 不影响任何交互（唯一交互=托盘 wake，最坏延迟见计划 §2.3）；
+   *  - 本机兜底熄屏（IDLE_SLEEP_MS 360s 路径）后 screenOn=false 同样进入闲时档；
+   *  - 主控不可达（failCount>0）维持 5s 退避不变（与闲时档巧合同值，无需特判）。
+   *  - 不用 curState=="IDLE" 判闲：IDLE 亮屏正是"顾客扫码引导窗口"，需快轮询。 */
+  unsigned long interval = (failCount > 0) ? POLL_BACKOFF_MS
+                        : (screenOn ? POLL_INTERVAL_MS : POLL_IDLE_INTERVAL_MS);
   if (now - lastPoll >= interval) {
     lastPoll = now;
     pollScreen();

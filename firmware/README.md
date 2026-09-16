@@ -5,7 +5,7 @@
 - 硬件：微雪 ESP32-C6-Touch-AMOLED-2.16（ESP32-C6、2.16 寸 480×480 AMOLED 电容触摸屏、USB-C）
 - 芯片：AXP2101 PMU（屏供电）、SH8601 显示（QSPI）、CST9220 触摸（I2C）
 - 架构：Arduino + esp32 core **3.3.x**，**不使用 LVGL**（UI 极简，esp_lcd 直绘）
-- 传输通道（2026-08 Task 10B 起）：**WiFi（`TRANSPORT_WIFI`，现役默认，USB 常供电不省电）**——WiFiManager 配网 + HTTP 轮询主控；BLE 保留为可回切变体（`-DTRANSPORT_BLE`）。契约与运维见 §十
+- 传输通道（2026-08 Task 10B 起）：**WiFi（`TRANSPORT_WIFI`，现役默认，WiFi 省电改造后：modem sleep + 熄屏闲时 5s 轮询 + TX 11dBm 起测 + CPU 80MHz + iTWT 可选）**——WiFiManager 配网 + HTTP 轮询主控；BLE 保留为可回切变体（`-DTRANSPORT_BLE`）。契约与运维见 §十
 
 ## 文件清单
 
@@ -63,7 +63,7 @@ PC 侧测量脚本在 `tools/poc/ble_spike_pc.py`、`tools/poc/ble_probe_stages.
 - **USB CDC On Boot：Enabled**（C6 原生 USB 直连；不开则串口监视器无日志）
 - 其余默认
 
-**传输通道二选一（Task 10B，`transport_config.h` 编译开关）**：默认 **`TRANSPORT_WIFI`**（现役：WiFiManager 配网 + HTTP 轮询，USB 常供电不省电）；BLE **`TRANSPORT_BLE`**（可回切：BLE 广播 + GATT 收发，**不初始化 CST9220 触摸、不开 WiFi**）。用 arduino-cli `--build-property` 注入 `-DTRANSPORT_BLE` 回切即可，**无需改源码**（见下方命令）；两宏同时定义会在编译期报错。
+**传输通道二选一（Task 10B，`transport_config.h` 编译开关）**：默认 **`TRANSPORT_WIFI`**（现役：WiFiManager 配网 + HTTP 轮询，WiFi 省电改造后：modem sleep + 熄屏闲时 5s 轮询 + TX 11dBm 起测 + CPU 80MHz + iTWT 可选）；BLE **`TRANSPORT_BLE`**（可回切：BLE 广播 + GATT 收发，**不初始化 CST9220 触摸、不开 WiFi**）。用 arduino-cli `--build-property` 注入 `-DTRANSPORT_BLE` 回切即可，**无需改源码**（见下方命令）；两宏同时定义会在编译期报错。
 
 ### 命令行（arduino-cli）等效路线
 
@@ -81,7 +81,31 @@ arduino-cli upload -p COM3 --fqbn $fqbn --input-dir C:\arduino-build\print_scree
 arduino-cli compile --fqbn $fqbn --build-property compiler.cpp.extra_flags=-DTRANSPORT_BLE --build-path C:\arduino-build\print_screen_ble firmware\print_screen
 ```
 
-注意：必须注入 `compiler.cpp.extra_flags`（只追加编译宏），**不要**覆盖 `build.extra_flags`——esp32 core 的 `build.extra_flags` 默认值含 ESP32/CDC 等必需宏，覆盖只传一个宏会让编译崩（2026-08-25 实踩，见计划修订记录之五）。
+**默认 WiFi 省电版（当前发布形态）**：
+
+```powershell
+arduino-cli compile --fqbn $fqbn --build-path C:\arduino-build\print_screen_powersave firmware\print_screen
+```
+
+**不睡版（`PM_LIGHT_SLEEP=0`，日常串口排障/烧录用；行为 = 改造前现状）**：
+
+```powershell
+arduino-cli compile --fqbn $fqbn --build-property compiler.cpp.extra_flags=-DPM_LIGHT_SLEEP=0 --build-path C:\arduino-build\print_screen_powersave_nopm firmware\print_screen
+```
+
+> 以上注入都只追加 `compiler.cpp.extra_flags`，**不要**覆盖 `build.extra_flags`——esp32 core 的 `build.extra_flags` 默认值含 ESP32/CDC 等必需宏，覆盖只传一个宏会让编译崩（2026-08-25 实踩，见计划修订记录之五）。
+
+### WiFi 省电宏速查（2026-09-07 改造）
+
+| 宏 | 位置（`print_screen.ino` TRANSPORT_WIFI 分支） | 说明 |
+|---|---|---|
+| `PM_LIGHT_SLEEP` | 文件顶部 include 区，默认 `1` | 方案 A2 自动 light sleep；`-DPM_LIGHT_SLEEP=0` 构建“不睡版” |
+| `POLL_IDLE_INTERVAL_MS` | WiFi 宏区，默认 `5000` | 熄屏闲时轮询间隔（ms） |
+| `WIFI_TX_POWER_OK` / `WIFI_TX_POWER_WEAK` / `WIFI_TX_RSSI_KEEP` | WiFi 宏区 | 降 TX 功率起测档与 RSSI 阈值 |
+| `ITWT_ENABLE` / `ITWT_WAKE_INVL_*` / `ITWT_MIN_WAKE_DURA` / `ITWT_WAKE_DURATION_UNIT` / `ITWT_SETUP_TIMEOUT_MS` | WiFi 宏区 | iTWT 实验开关与协商参数 |
+
+> **联动约束**：`POLL_IDLE_INTERVAL_MS=5000` 时，PC 端 `printshop/config.py` 的
+> `screen_online_threshold_seconds` 必须保持 `12.0`（> 2×5s）；若改大固件闲时间隔，必须同步改 PC 端。
 
 注意：esp32 工具链的 riscv32 链接器**不能处理中文/非 ASCII 路径**，`--build-path` 与 arduino-cli 数据目录必须用纯 ASCII 路径（如 `C:\arduino-build`、`C:\arduino15`）。
 
@@ -103,7 +127,7 @@ BLE 可回切变体不开 WiFi、不连路由器，此配置不用；绑定关�
 2. 上传失败 / 认不出端口 → **按住板子侧边 BOOT 键再重新上电**进入下载模式，再正常上传。
 3. 烧完开串口监视器（115200）看日志；无输出先查 **USB CDC On Boot 是否 Enabled**。
 4. 期望日志顺序：
-   - WiFi 现役变体：`[hw] AXP2101 PMU init done` → `[hw] SH8601 display init done` → `[net] WiFi connected, IP=...`（无 `[hw] CST9220 touch init done`，触摸已停用）；
+   - WiFi 现役变体：`[hw] AXP2101 PMU init done` → `[hw] SH8601 display init done` → `[net] WiFi connected, IP=...` → `[net] RSSI=... TX power=...` → `[cpu] freq=80 MHz` → `[pm] esp_pm_configure ...` → `[twt] ...`（无 `[hw] CST9220 touch init done`，触摸已停用）；
    - BLE 可回切变体：`[hw] AXP2101 PMU init done` → `[ble] advertising as PRINT-SCREEN, interval=100ms` → `[ble] MAC=...`（public 地址，主控绑定用）；**开机不初始化显示**——面板首次点亮推迟到第一次 display=on 推送（冷启动 ~1.1s 已被接受，空闲期零面板功耗）；建连时见 `[ble] connected` / `[ble] MTU negotiated: 517`。
 
 ## 五、首次配网流程（仅 TRANSPORT_WIFI 现役变体）

@@ -14,6 +14,9 @@ class Config:
     render_dpi: int = 300
     max_render_pages: int = 200
     idle_sleep_seconds: int = 180
+    # 小屏 WiFi 在线判定阈值（秒）：必须大于固件闲时轮询间隔 POLL_IDLE_INTERVAL_MS(5s)
+    # 的 ~2 倍；若固件调大闲时间隔，此处须同步调大（firmware .ino 同注释）
+    screen_online_threshold_seconds: float = 12.0
     no_file_timeout: int = 300
     poll_interval: float = 1.5
     office_convert_timeout: float = 120.0

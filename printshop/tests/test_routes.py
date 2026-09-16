@@ -27,8 +27,8 @@ def _job(id=1, status=JobStatus.PENDING, page_count=0, path="inbox/a1.pdf", cate
     )
 
 
-def _app(tmp_path=None, state=SessionState.CONNECTED):
-    cfg = Config()
+def _app(tmp_path=None, state=SessionState.CONNECTED, cfg=None):
+    cfg = cfg or Config()
     if tmp_path:
         cfg.inbox_dir = tmp_path / "inbox"
         cfg.work_dir = tmp_path / "work"
@@ -685,7 +685,31 @@ def test_screen_payload_initial(tmp_path):
     assert payload["transport"] == "wifi"
     assert payload["online"] is False
     assert payload["last_seen_at"] is None
-    assert payload["threshold_seconds"] == 10.0
+    assert payload["threshold_seconds"] == 12.0
+
+
+def test_app_context_screen_threshold_default_from_config(tmp_path):
+    """AppContext 在线阈值默认取自 Config().screen_online_threshold_seconds（12.0）。"""
+    app, ctx = _app(tmp_path)
+    assert ctx.screen_online_threshold_seconds == Config().screen_online_threshold_seconds == 12.0
+
+
+def test_app_context_screen_threshold_follows_custom_config(tmp_path):
+    """AppContext 在线阈值跟随 Config 自定义值。"""
+    cfg = Config(screen_online_threshold_seconds=9.0)
+    app, ctx = _app(tmp_path, cfg=cfg)
+    assert ctx.screen_online_threshold_seconds == 9.0
+    assert ctx.screen_payload()["threshold_seconds"] == 9.0
+
+
+def test_screen_online_threshold_boundary(tmp_path):
+    """在线判定以 config 阈值为界：age >= threshold 离线，age < threshold 在线。"""
+    app, ctx = _app(tmp_path)
+    threshold = ctx.screen_online_threshold_seconds
+    ctx.screen_seen_at = datetime.now() - timedelta(seconds=threshold)
+    assert ctx._screen_online() is False
+    ctx.screen_seen_at = datetime.now() - timedelta(seconds=threshold - 0.1)
+    assert ctx._screen_online() is True
 
 
 def test_mark_screen_seen_first_and_repeat(tmp_path):
