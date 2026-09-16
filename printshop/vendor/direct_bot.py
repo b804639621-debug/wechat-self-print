@@ -443,9 +443,11 @@ class WeChatHelperBot:
         url = ""
 
         if msg_type == 3:
+            # 取原图：省略 type 参数。type=slave 返回的是缩略图（打印模糊根因，
+            # 2026-08-31），网页微信协议中不带 type 的 webwxgetmsgimg 返回原图字节。
             url = (
                 f"https://{self.entry_host}/cgi-bin/mmwebwx-bin/webwxgetmsgimg"
-                f"?MsgID={raw.get('MsgId')}&skey={quote(self.skey, safe='')}&type=slave"
+                f"?MsgID={raw.get('MsgId')}&skey={quote(self.skey, safe='')}"
                 f"&mmweb_appid={self.mmweb_appid}"
             )
         elif msg_type == 49 and raw.get("AppMsgType") == 6:
