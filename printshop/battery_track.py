@@ -1,7 +1,7 @@
 """电池电量记录与续航估算脚本。
 
 用法：
-    python -m printshop.battery_track [--base-url http://127.0.0.1:8000]
+    python -m printshop.battery_track [--base-url http://127.0.0.1:18080]
                                       [--csv battery_history.csv]
                                       [--min-span-minutes 10]
                                       [--max-samples 1000]
@@ -221,7 +221,7 @@ def _format_summary(row: dict[str, Any]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="读取小屏电量并记录/估算续航")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--base-url", default="http://127.0.0.1:18080")
     parser.add_argument("--csv", type=Path, default=DEFAULT_CSV)
     parser.add_argument("--min-span-minutes", type=int, default=10)
     parser.add_argument("--max-samples", type=int, default=1000)

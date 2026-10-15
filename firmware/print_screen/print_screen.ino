@@ -205,7 +205,8 @@ void showMaintenance(const char* s) {
 
 /* ---- 可配置参数 ---- */
 #define SERVER_IP        "192.168.31.171"    /* 主控固定 IP（配网时按店内实际改） */
-#define SERVER_PORT      8000
+#define SERVER_PORT      18080               /* 必须与主控实际端口一致（主控默认 18080，
+                                              * 换端口改动此宏 + 重烧，见 firmware/README §三） */
 #define POLL_INTERVAL_MS 1500                /* 正常轮询间隔 */
 #define POLL_IDLE_INTERVAL_MS 5000           /* 熄屏闲时轮询间隔（省电档2）：
                                               * PC 侧 screen_online_threshold_seconds 必须 > 2×此值；

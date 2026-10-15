@@ -3,7 +3,7 @@ from printshop.config import Config
 
 def test_config_defaults():
     c = Config()
-    assert c.port == 8000
+    assert c.port == 18080
     assert c.idle_sleep_seconds == 180
     assert c.screen_online_threshold_seconds == 12.0
     assert c.inbox_dir.name == "inbox"

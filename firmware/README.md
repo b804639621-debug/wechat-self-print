@@ -116,10 +116,13 @@ BLE 可回切变体不开 WiFi、不连路由器，此配置不用；绑定关�
 
 ```cpp
 #define SERVER_IP  "192.168.31.171"  // 改成店内主控实际 IP
-#define SERVER_PORT 8000
+#define SERVER_PORT 18080            // 必须与主控实际端口一致，默认 18080
 ```
 
-主控侧服务（`printshop`）默认监听 `0.0.0.0:8000`，与 `GET /api/screen/state`、`POST /api/screen/wake` 接口契约一致（BLE 变体写屏即走这两个语义的推送版，见 §十）。
+主控侧服务（`printshop`）默认监听 `0.0.0.0:18080`，与 `GET /api/screen/state`、
+`POST /api/screen/wake` 接口契约一致（BLE 变体写屏即走这两个语义的推送版，见 §十）。
+换主控端口（CLI `--port` / 环境变量 `PRINTSHOP_PORT` / exe 同级 `printshop.json`）
+后必须同步改 `SERVER_PORT` 并重烧本固件，否则小屏失联。
 
 ## 四、烧录
 

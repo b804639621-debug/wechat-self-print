@@ -3,14 +3,25 @@
 启动方式：`python -m printshop.main` 或 `python printshop/main.py`。
 PyInstaller 冻结态：chdir 到 exe 同级目录，使 Config 的相对路径（inbox/work/db）
 落在 exe 旁而非 _MEI 临时目录（见 printshop.spec）。
+示例：
+    python -m printshop.main [--web | --ble-selftest] [--port 18080] [--host 0.0.0.0]
+
+端口覆盖优先级（高→低）：CLI --port/--host > 环境变量 PRINTSHOP_PORT/PRINTSHOP_HOST
+> exe 同级 printshop.json > 默认 18080（见 docs/plan-port-conflict-solution.md）。
+启动前做端口预检：被占则按"是否本服务在运行"区分提示后退出，
+绝不静默换端口（ESP32 小屏 HTTP 轮询依赖编译期写死的端口）。
+退出码：0 正常/让位；2 启动失败；3 端口被其他程序占用。
 """
+import argparse
 import asyncio
 import contextlib
 import logging
 import os
+import socket
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 import uvicorn
@@ -144,6 +155,12 @@ def create_app(cfg: Config | None = None, store: JobStore | None = None,
     async def admin_page():
         return FileResponse(str(STATIC_DIR / "admin.html"))
 
+    @app.get("/api/screen/fingerprint")
+    async def fingerprint():
+        """双实例互斥探测指纹（无敏感信息）：第二份进程启动时 GET 本端点判定
+        "端口被占"是否为本服务自身（_port_is_own_service）。"""
+        return {"service": "WeChat Self-Print", "port": ctx.cfg.port}
+
     return app
 
 
@@ -196,6 +213,65 @@ def _run_gui_mode(cfg: Config, app: FastAPI, ctx: AppContext,
     return 0
 
 
+def _port_free(host: str, port: int) -> bool:
+    """端口预检：能否在本机 bind 该端口（host=0.0.0.0 时试通配地址）。"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("" if host == "0.0.0.0" else host, port))
+            return True
+        except OSError:  # WinError 10048(占用)/10013(权限) 等
+            return False
+
+
+def _port_is_own_service(port: int, timeout: float = 2.0) -> bool:
+    """双实例互斥判定：GET /api/screen/fingerprint 端点返回本服务指纹。
+    注意 HITRAN 全指纹是服务端响应包含 service 字段才判为自身，
+    避免同端口误判其他软件。探测失败（无响应/超时）返回 False，
+    按"被其他程序占用"处理——宁可报冲突也不静默吞掉真正的异常。"""
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/screen/fingerprint",
+                timeout=timeout) as resp:
+            return '"WeChat Self-Print"' in resp.read().decode("utf-8", "replace")
+    except Exception:
+        return False
+
+
+def _resolve_bind_conflict(cfg: Config) -> int:
+    """启动端口预检（fail-fast，不静默换端口——ESP32 小屏靠编译期写死的端口轮询）：
+    - 空闲 → 0 正常；被占且确认本服务在运行 → 让位退出 0（托盘日志有说明）；
+    - 被占但非本服务 → 指引换端后退出码 3。"""
+    if _port_free(cfg.host, cfg.port):
+        return 0
+    own = _port_is_own_service(cfg.port)
+    _log.error(
+        "端口 %d 被占用（%s）。可用 --port <新端口> / 环境变量 PRINTSHOP_PORT / "
+        "exe 同级 printshop.json 更换（换端口后须同步固件 SERVER_PORT 重烧）",
+        cfg.port, "本服务已在运行" if own else "其他程序占用")
+    try:
+        msg = ("printshop 已在运行（端口 %d），本次启动让位" if own
+               else "端口 %d 被其他程序占用：请用 --port 指定其他端口，或编辑 "
+               "exe 同级 printshop.json 后重试") % cfg.port
+        print(msg, flush=True)
+    except Exception:
+        pass  # stdout 已被 redirect 到日志，理论上不会失败；防御性兜底
+    return 0 if own else 3
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    """解析 --port/--host 后从 argv 剥离，保证既有 `--web`/`--ble-selftest`
+    用 `in sys.argv` 判断的分支逻辑不受影响。"""
+    parser = argparse.ArgumentParser(prog="printshop", add_help=False)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--host", default=None)
+    args, _ = parser.parse_known_args(argv)
+    for flag in ("--port", "--host"):
+        while flag in argv:
+            i = argv.index(flag)
+            del argv[i:i + 2]
+    return args
+
+
 def main() -> None:
     if getattr(sys, "frozen", False):
         os.chdir(Path(sys.executable).resolve().parent)
@@ -206,9 +282,19 @@ def main() -> None:
     if "--ble-selftest" in sys.argv:
         # BLE 自检模式：不起服务/托盘、不碰微信，直接跑真实小屏链路后退出
         sys.exit(asyncio.run(run_ble_selftest(Config())))
-    cfg = Config()
+    args = _parse_args(sys.argv[1:])
+    # 配置优先级（高→低）：CLI > env（__post_init__ 内处理）> exe 同级
+    # printshop.json（冻结态已 chdir 到 exe 目录，与数据目录机制一致）> 默认值
+    cfg = Config.from_json_file(Path("printshop.json"))
+    if args.port is not None:
+        cfg.port = args.port  # CLI 显式值最高优先级，压过 env
+    if args.host is not None:
+        cfg.host = args.host
     app = create_app(cfg)
     ctx = app.state.ctx
+    rc = _resolve_bind_conflict(cfg)
+    if rc != 0:
+        sys.exit(rc)
     server = uvicorn.Server(uvicorn.Config(
         app,
         host=cfg.host,

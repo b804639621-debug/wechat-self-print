@@ -13,9 +13,28 @@
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python -m pip install -r printshop\requirements.txt
-.\.venv\Scripts\python -m printshop.main     # 启动服务（默认 0.0.0.0:8000）
+.\.venv\Scripts\python -m printshop.main     # 启动服务（默认 0.0.0.0:18080）
 .\.venv\Scripts\python -m pytest printshop\tests -q
 ```
+
+### 端口配置（与其他项目端口冲突时）
+
+默认端口 `18080`（避开 FastAPI/dev server 常用的 8000/8080/5000 等）。覆盖优先级
+（高→低）：CLI 参数 > 环境变量 > exe 同级 `printshop.json` > 默认值。
+
+```powershell
+.\.venv\Scripts\python -m printshop.main --port 19000 --host 0.0.0.0   # CLI（临时）
+$env:PRINTSHOP_PORT = "19000"                                          # 环境变量（会话）
+'{"port": 19000}' | Set-Content D:\printshop\printshop.json            # exe 同级 json（持久，推荐）
+```
+
+启动时做端口预检（不换端口硬起）。启动期退出码约定：`0`=探测到本服务已在运行让位
+退出（日志提示）、`2`=其他启动失败、`3`=端口被其他程序占用（报错退出，日志文件里有
+指引）。⚠️ **换端口后必须同步改
+固件 `SERVER_PORT`（`firmware/print_screen/print_screen.ino` 的 TRANSPORT_WIFI
+分支）并重烧，否则小屏失联**（详见 firmware/README.md §三 与
+docs/plan-port-conflict-solution.md）。防其他软件抢注可加系统级端口预留：
+`netsh int ipv4 add excludedportrange protocol=tcp startport=18080 numberofports=1`（管理员）。
 
 ## 部署（打包与安装）
 
@@ -57,8 +76,8 @@ Windows 自动登录，开机即进桌面拉起服务。
 
 ### 首次使用流程
 
-1. 双击/自启运行 `printshop.exe`，托盘出现图标，服务监听 `0.0.0.0:8000`
-2. 浏览器开 `http://127.0.0.1:8000/admin`（管理页）；`/screen`（主屏画面）
+1. 双击/自启运行 `printshop.exe`，托盘出现图标，服务监听 `0.0.0.0:18080`
+2. 浏览器开 `http://127.0.0.1:18080/admin`（管理页）；`/screen`（主屏画面）
 3. 管理页选打印机，用一份测试 PDF 走一次完整打印，确认双面/彩色/份数正确
 4. 手机微信扫码登录 → 文件传输助手发文件 → 店内接收 → 店员打印
 5. 打印完成后顾客自动退出登录、文件自动清理（隐私红线）
