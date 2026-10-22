@@ -3,6 +3,10 @@
 # === 本项目本地修改（跨顾客会话隔离）===
 # - 新增 WeChatHelperBot.clear_message_cache()：清空内存消息缓存，供登出时调用，
 #   防止下个顾客拉到上个顾客的缓存消息（见 wechat_bot.py WeChatClient.logout）。
+# === 本项目本地修改（断网自愈）===
+# - jslogin 取码遇 httpx 连接类错误时有限重试（指数退避）并重建 httpx.AsyncClient：
+#   长断网后旧 client 连接池/DNS 状态失活，外网恢复也持续 ConnectError（实机 17h 断网
+#   只能重启进程恢复）。重建 + 重试即可自愈，见 _jslogin_get_uuid/_rebuild_client。
 
 import asyncio
 from collections import deque
@@ -19,6 +23,9 @@ from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
+
+_JSLOGIN_RETRIES = 3    # jslogin 有限重试总次数（含首次），连不上最终原样抛出
+_JSLOGIN_BACKOFF = 0.5  # 首次重试退避秒数，此后按指数递增（0.5/1.0s）
 
 
 # 预编译正则表达式 (避免每次 trace 时重新编译)
@@ -115,13 +122,18 @@ class WeChatHelperBot:
         return "login.wx.qq.com", "file.wx.qq.com"
 
     async def start(self, headless=True, user_data_dir=None):
-        timeout = httpx.Timeout(connect=10.0, read=40.0, write=40.0, pool=10.0)
         if self.trace_enabled:
             self.trace_dir.mkdir(parents=True, exist_ok=True)
             # 启动 trace 刷新任务
             self._trace_flush_task = asyncio.create_task(self._trace_flush_loop())
 
-        self.client = httpx.AsyncClient(
+        self.client = self._create_client()
+        await self._load_session()
+        await self.check_login_status(poll=False)
+
+    def _create_client(self) -> httpx.AsyncClient:
+        timeout = httpx.Timeout(connect=10.0, read=40.0, write=40.0, pool=10.0)
+        return httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
             event_hooks={
@@ -129,8 +141,18 @@ class WeChatHelperBot:
                 "response": [self._trace_on_response],
             },
         )
-        await self._load_session()
-        await self.check_login_status(poll=False)
+
+    async def _rebuild_client(self) -> None:
+        """重建 httpx.AsyncClient（断网自愈）：丢弃失活的连接池并重新解析 DNS。
+
+        保留 trace 事件钩子（hook 绑定 self 方法，不随实例丢弃）。
+        """
+        old, self.client = self.client, self._create_client()
+        if old is not None:
+            try:
+                await old.aclose()
+            except Exception:
+                pass
 
     async def stop(self):
         # 停止 trace 刷新任务
@@ -509,8 +531,19 @@ class WeChatHelperBot:
             f"https://{self.login_host}/jslogin?appid={self.mmweb_appid}"
             f"&redirect_uri={redirect_uri}&fun=new&lang={self.lang}&_={now}"
         )
-        resp = await self.client.get(url)
-        resp.raise_for_status()
+        # 断网自愈：连接类错误（httpx.RequestError 子类，含 ConnectError）有限重试、
+        # 每次退避后先重建 httpx client 再试（连接池/DNS 失活场景）；HTTPStatusError
+        # 是服务端明确应答（协议层），不属于网络故障，不重试直接抛。
+        for attempt in range(1, _JSLOGIN_RETRIES + 1):
+            try:
+                resp = await self.client.get(url)
+                resp.raise_for_status()
+                break
+            except httpx.RequestError:
+                if attempt >= _JSLOGIN_RETRIES:
+                    raise
+                await asyncio.sleep(_JSLOGIN_BACKOFF * (2 ** (attempt - 1)))
+                await self._rebuild_client()
 
         uuid = self._regex_group(resp.text, r'window\.QRLogin\.uuid\s*=\s*"([^"]+)"')
         if not uuid:

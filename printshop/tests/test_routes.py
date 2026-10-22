@@ -526,6 +526,22 @@ def test_screen_wake(tmp_path):
     assert ctx.sm.display is True
 
 
+def test_screen_wake_qr_failure_returns_503_with_message(tmp_path):
+    """取码失败：明确 503 + 错误文案，不再裸 500（同步不残留过期旧码在屏上）。"""
+    import httpx
+    from unittest.mock import AsyncMock
+
+    app, ctx = _app(tmp_path)
+    ctx.sm.state = SessionState.IDLE
+    ctx.sm.qr_content = "https://login.weixin.qq.com/l/expired"
+    ctx.wx.get_qr = AsyncMock(side_effect=httpx.ConnectError("down"))
+    r = TestClient(app).post("/api/screen/wake")
+    assert r.status_code == 503
+    assert r.json()["ok"] is False
+    assert "网络异常" in r.json()["error"]
+    assert ctx.sm.qr_content is None
+
+
 def test_screen_page_served():
     app = create_app()
     r = TestClient(app).get("/screen")

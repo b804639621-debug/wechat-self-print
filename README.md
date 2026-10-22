@@ -74,6 +74,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_autostart.ps
 写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（免管理员）。建议同时配置
 Windows 自动登录，开机即进桌面拉起服务。
 
+### 故障恢复与运维
+
+- **断网自愈**：微信取码遇到连接故障时会有限重试并重建网络连接；取码失败会清除旧二维码，避免顾客扫描过期码，屏幕显示“网络异常，暂无二维码，请稍后再试”。
+- **小屏离线看门狗**：每 5 分钟检查主服务、小屏上报和防火墙规则，必要时尝试拉起服务并提醒：
+
+  ```powershell
+  # 安装开机自检并立即检查一次（无需管理员）
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_watchdog.ps1
+  # 只检查一次，不安装
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_watchdog.ps1 -Test
+  # 卸载
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install_watchdog.ps1 -Uninstall
+  ```
+
+- **防火墙规则瘦身**：先以只读演练检查重复规则，确认后再使用管理员 PowerShell 执行；执行前会自动备份完整防火墙策略：
+
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fw-slim.ps1
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\fw-slim.ps1 -Apply
+  ```
+
+  看门狗日志位于 `dist\logs\watchdog.log`。防火墙故障背景、恢复方法和看门狗参数见
+  [运维文档](docs/ops-firewall-slim-and-watchdog.md)。
+
 ### 首次使用流程
 
 1. 双击/自启运行 `printshop.exe`，托盘出现图标，服务监听 `0.0.0.0:18080`
@@ -87,9 +111,9 @@ Windows 自动登录，开机即进桌面拉起服务。
 ```
 printshop/         服务源码（FastAPI + 状态机 + XPS 打印引擎）
 printshop/static/  admin.html（管理页）、screen.html（主屏页）
-printshop/tests/   单测（178 例）
+printshop/tests/   自动化测试
 printshop.spec     打包配置（PyInstaller）
-scripts/           开机自启安装脚本、dist 冒烟测试
+scripts/           开机自启、看门狗、防火墙维护与 dist 冒烟测试脚本
 tools/             SumatraPDF（备用调试）、PoC
 firmware/          ESP32 小屏固件
 ```

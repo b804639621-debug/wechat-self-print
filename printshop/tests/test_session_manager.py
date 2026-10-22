@@ -421,6 +421,36 @@ def test_screen_state_message_reflects_note():
 
 
 @pytest.mark.asyncio
+async def test_wake_failure_clears_stale_qr_and_reports_message():
+    """防回归（2026 废码残留实机缺陷）：取码失败时不得把过期旧二维码留在屏上。"""
+    import httpx
+
+    sm = _idle()
+    sm.qr_content = "https://login.weixin.qq.com/l/expired"
+    sm._wx.get_qr = AsyncMock(side_effect=httpx.ConnectError("All connection attempts failed"))
+    ok = await sm.wake()
+    assert ok is False
+    assert sm.qr_content is None
+    assert sm.screen_state()["message"] == "网络异常，暂无二维码，请稍后再试"
+    # 屏已亮则保持亮：屏显提示文案而非黑屏
+
+
+@pytest.mark.asyncio
+async def test_wake_failure_keeps_display_off_and_retry_wakes_with_qr():
+    import httpx
+
+    sm = _sm()
+    sm.qr_content = "https://login.weixin.qq.com/l/expired"
+    sm._wx.get_qr = AsyncMock(side_effect=httpx.ConnectError("down"))
+    assert await sm.wake() is False
+    assert sm.display is False and sm.qr_content is None
+    # 恢复后再次唤醒：出码成功，提示清掉
+    sm._wx.get_qr = AsyncMock(return_value=(b"P", "https://login.weixin.qq.com/l/new"))
+    assert await sm.wake() is True
+    assert sm.qr_content.endswith("/l/new") and sm.screen_state()["message"] == ""
+
+
+@pytest.mark.asyncio
 async def test_finish_service_archives_jobs(tmp_path):
     cfg = Config(); cfg.inbox_dir = tmp_path; cfg.work_dir = tmp_path
     store = MagicMock()

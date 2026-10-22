@@ -22,6 +22,8 @@ _log = logging.getLogger(__name__)
 
 SCANNED_TIMEOUT_SECONDS = 120
 MAX_FILE_BYTES = 25 * 1024 * 1024
+# 取码失败时经 message 字段（screen_state/_note 通道）显示给顾客的提示
+QR_UNAVAILABLE_MESSAGE = "网络异常，暂无二维码，请稍后再试"
 
 
 def _is_network_error(exc: BaseException) -> bool:
@@ -142,14 +144,39 @@ class SessionManager:
         _, self.qr_content = await self._wx.get_qr(force=force)
         self._notify()
 
-    async def wake(self) -> None:
+    async def wake(self) -> bool:
+        """触摸/托盘唤醒：先取码成功再亮屏。
+
+        防废码残留（实机缺陷）：原先先亮屏（显示内存残留旧 qr_content）再取码，
+        取码失败时旧二维码留在屏上被顾客扫到（微信 uuid ~240s 过期，报"查找失败"）。
+        现改为取码失败时清空旧码、屏显网络异常提示，并返回 False 供路由层返回明确错误。
+
+        Returns: True=唤醒成功（新码或复用未过期码）；False=IDLE 以外状态或取码失败。
+        """
         if self.state != SessionState.IDLE:
-            return
-        self._set_display(True)
+            return False
         self._last_event_ts = time.monotonic()
         # 复用未过期码（get_qr 默认 force=False）：重复唤醒/触摸不得换码，
         # 否则用户扫的码与轮询 uuid 错位，确认登录也检测不到
-        await self._refresh_qr()
+        try:
+            await self._refresh_qr()
+        except Exception:
+            _log.warning("唤醒取码失败，清空屏上旧二维码（避免过期码被扫）", exc_info=True)
+            self._clear_stale_qr()
+            return False
+        self._set_display(True)
+        if self._note == QR_UNAVAILABLE_MESSAGE:
+            # 上次唤醒失败留下的提示，取码恢复后清掉，避免误导
+            self._note = ""
+            self._notify()
+        return True
+
+    def _clear_stale_qr(self) -> None:
+        """清空旧二维码并经 message 字段提示网络异常（display 保持当前值：
+        已亮屏则屏显提示文案，顾客可见；息屏则下轮触摸重新整个流程）。"""
+        self.qr_content = None
+        self._note = QR_UNAVAILABLE_MESSAGE
+        self._notify()
 
     async def _handle_poll(self, status: str) -> None:
         if self.state not in (SessionState.IDLE, SessionState.SCANNED):
@@ -432,7 +459,11 @@ class SessionManager:
                 return
             await self._finish_service_locked()
             self._set_display(True)
-            await self._refresh_qr()
+            try:
+                await self._refresh_qr()
+            except Exception:
+                _log.warning("掉线恢复取码失败，清空屏上旧二维码", exc_info=True)
+                self._clear_stale_qr()
 
     async def _save_session(self) -> bool:
         try:

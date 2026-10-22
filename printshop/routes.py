@@ -336,8 +336,13 @@ def build_router(ctx: AppContext) -> APIRouter:
 
     @router.post("/api/screen/wake")
     async def screen_wake():
-        await sm.wake()
-        return {"ok": True}
+        if await sm.wake():
+            return {"ok": True}
+        # 取码失败（掉线等）：不再裸 500，明确返回错误与屏上提示文案
+        return JSONResponse(status_code=503, content={
+            "ok": False,
+            "error": sm.screen_state()["message"] or "取码失败，请稍后再试",
+        })
 
     @router.get("/api/printers")
     async def printers():
